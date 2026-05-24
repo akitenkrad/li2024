@@ -1,0 +1,73 @@
+<!-- li2024 hero. Vault SVG style contract (palette + dark mode). -->
+<svg width="100%" viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Li et al. 2024 — EconAgent: LLM-Empowered Agents for Simulating Macroeconomic Activities</title>
+<desc>LLM-driven household agents each month decide their willingness to work and fraction of wealth to consume; these choices flow through a labour/goods market and fiscal/monetary policy, and macro regularities (Phillips curve, Okun's law) emerge from the bottom up.</desc>
+<style>
+  .t  { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 14px; fill: #2C2C2A; }
+  .ts { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 13px; fill: #444441; }
+  .tl { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 12px; font-weight: 600; fill: #534AB7; letter-spacing: 2px; }
+  .title { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 28px; font-weight: 600; fill: #2C2C2A; }
+  .glab { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 11px; font-weight: 500; fill: #888780; letter-spacing: 0.5px; }
+  .axis { stroke: #C7C5BD; stroke-width: 1; }
+  .edge { stroke: #C7C5BD; stroke-width: 1; opacity: 0.7; }
+  .curve { stroke: #534AB7; stroke-width: 1.6; fill: none; opacity: 0.7; }
+  .node { fill: #534AB7; }
+  .nodeT { fill: #0F6E56; }
+  .dot { fill: #534AB7; }
+  .dotT { fill: #0F6E56; }
+  @media (prefers-color-scheme: dark) {
+    .t  { fill: #E5E5E2; }
+    .ts { fill: #C7C5BD; }
+    .tl { fill: #AFA9EC; }
+    .title { fill: #E5E5E2; }
+    .glab { fill: #8C8B85; }
+    .axis { stroke: #5F5E5A; }
+    .edge { stroke: #5F5E5A; }
+    .curve { stroke: #AFA9EC; }
+    .node { fill: #AFA9EC; }
+    .nodeT { fill: #5DCAA5; }
+    .dot { fill: #AFA9EC; }
+    .dotT { fill: #5DCAA5; }
+  }
+</style>
+
+<!-- left: label + title -->
+<text x="40" y="60" class="tl">LLM MACROECONOMIC ABM</text>
+<text x="40" y="96" class="title">EconAgent</text>
+<text x="40" y="128" class="title">Macroeconomic Agents</text>
+<text x="40" y="162" class="ts">Li et al. (2024)</text>
+<text x="40" y="184" class="t">(p^w_i, p^c_i) = LLM( profile, economy, memory )</text>
+<text x="40" y="210" class="glab">monthly work / consume · progressive tax · Taylor rule</text>
+<text x="40" y="234" class="glab">emergent Phillips curve · Okun's law</text>
+
+<!-- middle: households feeding a shared market -->
+<g transform="translate(470, 70)">
+  <line x1="20" y1="20" x2="75" y2="60" class="edge"/>
+  <line x1="120" y1="14" x2="75" y2="60" class="edge"/>
+  <line x1="14" y1="100" x2="75" y2="60" class="edge"/>
+  <line x1="120" y1="104" x2="75" y2="60" class="edge"/>
+  <circle cx="20" cy="20" r="7" class="node"/>
+  <circle cx="120" cy="14" r="7" class="nodeT"/>
+  <circle cx="14" cy="100" r="7" class="nodeT"/>
+  <circle cx="120" cy="104" r="7" class="node"/>
+  <rect x="60" y="50" width="30" height="20" rx="3" class="dot"/>
+  <text x="75" y="150" class="glab" text-anchor="middle">households → market</text>
+</g>
+
+<!-- right: downward Phillips curve (inflation vs unemployment) -->
+<g transform="translate(660, 40)">
+  <line x1="0" y1="0" x2="0" y2="200" class="axis"/>
+  <line x1="0" y1="200" x2="200" y2="200" class="axis"/>
+  <text x="-8" y="10" class="glab" text-anchor="end">π</text>
+  <text x="196" y="220" class="glab" text-anchor="middle">u</text>
+  <text x="100" y="-6" class="glab" text-anchor="middle">Phillips (r &lt; 0)</text>
+
+  <!-- downward-sloping curve -->
+  <path class="curve" d="M10 30 C 70 70, 130 140, 195 185"/>
+  <circle cx="25" cy="48" r="3.5" class="dot"/>
+  <circle cx="70" cy="78" r="3.5" class="dot"/>
+  <circle cx="110" cy="118" r="3.5" class="dotT"/>
+  <circle cx="150" cy="150" r="3.5" class="dot"/>
+  <circle cx="185" cy="180" r="3.5" class="dotT"/>
+</g>
+</svg>
