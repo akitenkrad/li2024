@@ -10,29 +10,22 @@ Usage:
     econagent-tools show-experiment-settings
     econagent-tools show-experiment-settings --results-dir results/20260524_153000
     econagent-tools show-experiment-settings --results-dir results/latest --json
+
+I/O・run_metadata ブロックは共有ヘルパ `socsim_tools` に委譲する (出力はバイト等価)．
+run 設定テーブルは複合行 (Taylor α_π/α_u・市場 α_w/α_P) を含み汎用 `render_run_config`
+の `{label}: {value}` 形に収まらないため econagent 側に残す．sweep 設定テーブルと
+`--json` の `kind` フィールドも econagent 固有なので本モジュールに残す．
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
-
-def _resolve_results_dir(arg: str) -> Path:
-    """ユーザ指定の results_dir を絶対パスに解決する (symlink も実体へ)．"""
-    p = Path(arg)
-    if not p.is_absolute():
-        candidates = [Path.cwd() / arg, p]
-        for c in candidates:
-            if c.exists():
-                p = c
-                break
-        else:
-            p = candidates[0]
-    return Path(os.path.realpath(p))
+from socsim_tools.io import load_run_metadata, resolve_results_dir
+from socsim_tools.settings import render_run_metadata
 
 
 def _find_config_file(results_dir: Path) -> tuple[Path, str]:
@@ -49,15 +42,8 @@ def _find_config_file(results_dir: Path) -> tuple[Path, str]:
     )
 
 
-def _load_run_metadata(results_dir: Path) -> dict | None:
-    path = results_dir / "run_metadata.json"
-    if path.exists():
-        with path.open() as f:
-            return json.load(f)
-    return None
-
-
 def render_run_config(cfg: dict, source: Path) -> str:
+    """run 設定テーブルを整形する (econagent 固有; 複合行を含む)．"""
     lines: list[str] = []
     lines.append("=" * 70)
     lines.append("実行設定 (run)")
@@ -85,6 +71,7 @@ def render_run_config(cfg: dict, source: Path) -> str:
 
 
 def render_sweep_config(cfg: dict, source: Path) -> str:
+    """sweep 設定テーブルを整形する (econagent 固有; リスト項目を `, ` 連結する)．"""
     lines: list[str] = []
     lines.append("=" * 70)
     lines.append("実行設定 (sweep)")
@@ -101,28 +88,6 @@ def render_sweep_config(cfg: dict, source: Path) -> str:
     lines.append(f"シード基点       : {cfg.get('seed', '-')}")
     lines.append(f"LLM 温度         : {cfg.get('llm_temperature', '-')}")
     lines.append(f"LLM seed         : {cfg.get('llm_seed', '-')}")
-    lines.append("=" * 70)
-    return "\n".join(lines)
-
-
-def render_run_metadata(meta: dict) -> str:
-    lines: list[str] = []
-    lines.append("")
-    lines.append("LLM 実行メタデータ (run_metadata.json)")
-    lines.append("-" * 70)
-    lines.append(f"モデル           : {meta.get('llm_model', '-')}")
-    lines.append(f"endpoint         : {meta.get('llm_endpoint', '-')}")
-    lines.append(f"温度             : {meta.get('llm_temperature', '-')}")
-    lines.append(f"seed             : {meta.get('llm_seed', '-')}")
-    lines.append(f"呼び出し総数     : {meta.get('total_calls', '-')}")
-    lines.append(f"cache-hit        : {meta.get('cache_hits', '-')}")
-    rate = meta.get("cache_hit_rate")
-    if rate is not None:
-        lines.append(f"cache-hit 率     : {rate * 100:.1f}%")
-    note = meta.get("determinism_note")
-    if note:
-        lines.append("-" * 70)
-        lines.append(f"注記: {note}")
     lines.append("=" * 70)
     return "\n".join(lines)
 
@@ -146,15 +111,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    results_dir = _resolve_results_dir(args.results_dir)
+    results_dir = resolve_results_dir(args.results_dir)
     if not results_dir.exists():
         print(f"エラー: ディレクトリが存在しません: {results_dir}", file=sys.stderr)
         return 1
 
-    cfg_path, kind = _find_config_file(results_dir)
+    try:
+        cfg_path, kind = _find_config_file(results_dir)
+    except FileNotFoundError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        return 1
     with cfg_path.open() as f:
         cfg = json.load(f)
-    meta = _load_run_metadata(results_dir)
+    meta = load_run_metadata(results_dir)
 
     if args.json:
         payload = {"source": str(cfg_path), "kind": kind, "config": cfg, "run_metadata": meta}

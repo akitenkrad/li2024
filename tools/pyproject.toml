@@ -8,10 +8,14 @@ dependencies = [
     "numpy>=1.26",
     "pandas>=2.2",
     "scipy>=1.11",
+    "socsim-tools",
 ]
 
 [project.scripts]
 econagent-tools = "econagent_tools.cli:main"
+
+[tool.uv.sources]
+socsim-tools = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", subdirectory = "tools/socsim_tools" }
 
 [build-system]
 requires = ["hatchling"]
