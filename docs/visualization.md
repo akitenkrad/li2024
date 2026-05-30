@@ -31,6 +31,20 @@ Reads `sweep_summary.csv` and writes to `{sweep_dir}/figures/`:
 - **`sweep_gini_heatmap.png`** — Gini over the (tax-scale × N) grid (only when more than one N is present).
 - **`sweep_macro_by_n.png`** — mean inflation/unemployment by N (robustness of the sign/level across agent count).
 
+## `reproduce` — paper headline report
+
+```bash
+uv run econagent-tools reproduce                       # render from the latest reproduce results
+uv run econagent-tools reproduce --run --mock --quick  # run the Rust binary first (offline), then render
+```
+
+Reads `reproduce_summary.json` (written by `econagent reproduce`), prints the per-scenario macro dynamics and the PASS/off correlation anchors, and renders into `{results_dir}/figures/`:
+
+- **`macro_timeseries.png`** — inflation / unemployment / nominal GDP / Gini over time for the headline (`progressive`) scenario.
+- **`phillips_okun.png`** — the Phillips-curve and Okun's-law scatter with scipy Pearson `r`/`p`, recomputed from the headline scenario's `metrics.csv`.
+
+`--json` prints the summary without rendering. The `--mock` path is offline and contacts no model.
+
 ## Reproduction targets (qualitative)
 
 Because the local default model (`llama3.2`) differs from the paper's `gpt-3.5-turbo`, expect qualitative — not exact — reproduction:

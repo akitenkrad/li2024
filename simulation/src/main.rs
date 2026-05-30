@@ -1,11 +1,11 @@
 //! Li et al. (2024) "EconAgent" — 再現実験の CLI エントリポイント．
 //!
-//! `run`   : 単一設定で LLM 駆動マクロ経済 ABM を実行する．
-//! `sweep` : エージェント数 × 税率スケール × LLM モデル (× 政策レジーム) を走査し，
-//!           最終/平均マクロ指標を `sweep_summary.csv` に集計する．
-//!
-//! Phase 3 の `reproduce` (論文 Fig.2-6 / Table 一括再現・COVID 外的介入) は
-//! 未実装 (拡張点)．
+//! `run`       : 単一設定で LLM 駆動マクロ経済 ABM を実行する．
+//! `sweep`     : エージェント数 × 税率スケール × LLM モデル (× 政策レジーム) を走査し，
+//!               最終/平均マクロ指標を `sweep_summary.csv` に集計する．
+//! `reproduce` : 論文の headline マクロ動態 (インフレ/失業/GDP) と Phillips 曲線
+//!               (インフレ vs 失業; 負相関)・Okun の法則 (GDP 成長 vs 失業変化;
+//!               負相関) を一括再現し，観測相関を期待符号アンカーと突合する．
 
 use std::fs;
 use std::path::Path;
@@ -14,8 +14,11 @@ use clap::{Parser, Subcommand};
 use socsim_results::{refresh_latest_symlink, timestamp, write_csv, write_json};
 
 use econagent_simulation::config::{parse_regime, Config, LlmSettings, PolicyRegime};
-use econagent_simulation::metrics::mean;
-use econagent_simulation::simulation::{ensure_output_dir, run, save_metrics, save_run_metadata};
+use econagent_simulation::metrics::{mean, okun_correlation, phillips_correlation};
+use econagent_simulation::simulation::{
+    ensure_output_dir, mock_decision_client, run, run_with_client, save_metrics, save_run_metadata,
+    SimulationResult,
+};
 
 // ---------------------------------------------------------------------------
 // CLI 定義
@@ -37,6 +40,8 @@ enum Commands {
     Run(RunArgs),
     /// エージェント数 × 税率スケール × LLM モデルを走査し，マクロ指標を集計する．
     Sweep(SweepArgs),
+    /// 論文 headline (Phillips 曲線 / Okun の法則 / マクロ動態) を一括再現する．
+    Reproduce(ReproduceArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -139,6 +144,49 @@ struct SweepArgs {
     /// 結果出力ベースディレクトリ．
     #[arg(long, default_value = "results")]
     output_dir: String,
+}
+
+#[derive(Parser, Debug)]
+struct ReproduceArgs {
+    /// 家計数 N (論文標準 100)．
+    #[arg(long, default_value_t = 100)]
+    n_agents: usize,
+
+    /// シミュレーション月数 (240 = 20 年; --quick で 60 に縮約)．
+    #[arg(long, default_value_t = 240)]
+    months: usize,
+
+    /// 記憶長 L．
+    #[arg(long, default_value_t = 1)]
+    memory_length: usize,
+
+    /// 乱数シード基点 (シナリオごとに派生)．
+    #[arg(long, default_value_t = 42)]
+    seed: u64,
+
+    /// LLM 生成温度．
+    #[arg(long, default_value_t = 0.0)]
+    llm_temperature: f32,
+
+    /// LLM 生成シード．
+    #[arg(long, default_value_t = 0)]
+    llm_seed: u64,
+
+    /// プロンプト→応答キャッシュの保存先 (ライブ時のみ使用)．
+    #[arg(long, default_value = ".llm_cache/cache.json")]
+    cache_path: String,
+
+    /// 結果出力ベースディレクトリ．
+    #[arg(long, default_value = "results")]
+    output_dir: String,
+
+    /// ライブ LLM の代わりに scripted mock を使う (オフライン検証・CI 用)．
+    #[arg(long, default_value_t = false)]
+    mock: bool,
+
+    /// 短縮再現 (months=60; CI スモーク用)．
+    #[arg(long, default_value_t = false)]
+    quick: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +542,290 @@ fn summarize(
 }
 
 // ---------------------------------------------------------------------------
+// reproduce (論文 headline: Phillips 曲線 / Okun の法則 / マクロ動態)
+// ---------------------------------------------------------------------------
+
+/// `reproduce_summary.json` の 1 シナリオ行 (政策レジームごとのマクロ動態)．
+#[derive(serde::Serialize)]
+struct ReproduceScenario {
+    /// シナリオ名 (= 政策レジームラベル)．
+    name: String,
+    regime: String,
+    /// 3 年目以降 (month ≥ 36) の平均インフレ率．
+    mean_inflation_3y: f64,
+    /// 3 年目以降の平均失業率．
+    mean_unemployment_3y: f64,
+    /// 最終月の名目 GDP．
+    final_gdp: f64,
+    /// 最終月の貯蓄 Gini 係数．
+    final_gini: f64,
+    /// Phillips 曲線の Pearson 相関 (失業率 vs インフレ率; 負が期待)．
+    phillips_r: Option<f64>,
+    /// Okun の法則の Pearson 相関 (失業率変化 vs GDP 成長率; 負が期待)．
+    okun_r: Option<f64>,
+    /// 実行月数．
+    final_month: usize,
+    /// この結果を保存したサブディレクトリ (Python の図生成入力)．
+    results_subdir: String,
+}
+
+/// `reproduce_summary.json` のアンカー判定行．
+///
+/// 数値帯アンカー (`target_lo..=target_hi` に `observed` が入るか) と，符号アンカー
+/// (Phillips/Okun が負か) の両方を表現する．符号アンカーは `target_hi = 0` を上限と
+/// した «負であること» の帯で表す．
+#[derive(serde::Serialize)]
+struct ReproduceAnchor {
+    name: String,
+    paper_value: String,
+    observed: f64,
+    target_lo: f64,
+    target_hi: f64,
+    pass: bool,
+}
+
+/// `reproduce_summary.json` のルート．
+#[derive(serde::Serialize)]
+struct ReproduceSummary {
+    command: &'static str,
+    paper: &'static str,
+    mock: bool,
+    quick: bool,
+    months: usize,
+    n_agents: usize,
+    scenarios: Vec<ReproduceScenario>,
+    anchors: Vec<ReproduceAnchor>,
+    n_pass: usize,
+    n_anchors: usize,
+}
+
+/// 1 設定を実行する (`mock` なら scripted mock，さもなくばライブ LLM)．
+///
+/// mock 時は cache_path を None に倒して in-memory cache を使い，ディスク保存を
+/// 抑止する (ライブ LLM 呼び出し 0)．
+fn run_one(cfg: &Config, mock: bool) -> Result<SimulationResult, String> {
+    if mock {
+        let mock_cfg = Config {
+            llm: LlmSettings {
+                cache_path: None,
+                ..cfg.llm.clone()
+            },
+            ..cfg.clone()
+        };
+        run_with_client(&mock_cfg, mock_decision_client())
+    } else {
+        run(cfg)
+    }
+}
+
+fn cmd_reproduce(args: ReproduceArgs) {
+    let months = if args.quick { 60 } else { args.months };
+
+    let ts = timestamp();
+    let out_dir = format!("{}/{}_reproduce", args.output_dir, ts);
+    ensure_output_dir(&out_dir);
+    if let Some(parent) = Path::new(&args.cache_path).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    println!("=== Li et al. (2024) EconAgent 論文 headline 一括再現 ===");
+    println!(
+        "N: {} | months: {} | memory L: {} | mock: {} | quick: {}",
+        args.n_agents, months, args.memory_length, args.mock, args.quick,
+    );
+    println!("出力先: {}", out_dir);
+    println!("-------------------------------------------------");
+
+    // 政策レジーム 3 種を再現シナリオとする (論文標準 = progressive)．
+    // proportional / none は再分配が不平等・動態に与える影響の対照群．
+    let scenarios_spec: [PolicyRegime; 3] = [
+        PolicyRegime::Progressive,
+        PolicyRegime::Proportional,
+        PolicyRegime::None,
+    ];
+
+    let mut scenarios: Vec<ReproduceScenario> = Vec::new();
+
+    for regime in scenarios_spec {
+        let name = regime.label().to_string();
+        let subdir = format!("{}/{}", out_dir, name);
+        ensure_output_dir(&subdir);
+        let seed = socsim_core::derive_seed(args.seed, &[label_hash(&name)]);
+        let cfg = Config {
+            n_agents: args.n_agents,
+            months,
+            memory_length: args.memory_length,
+            regime,
+            seed: Some(seed),
+            llm: LlmSettings {
+                temperature: args.llm_temperature,
+                seed: args.llm_seed,
+                cache_path: Some(args.cache_path.clone()),
+            },
+            output_dir: subdir.clone(),
+            ..Config::default()
+        };
+
+        let result = run_one(&cfg, args.mock).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+
+        save_metrics(&result.metrics_history, &subdir);
+        save_run_metadata(&result, &cfg, &subdir);
+        let path = format!("{}/config.json", subdir);
+        write_json(&cfg.to_run_config_json(), &path).expect("config.json の書き込みに失敗");
+
+        let m = &result.metrics_history;
+        let after_3y: Vec<&econagent_simulation::metrics::MacroMetrics> =
+            m.iter().filter(|r| r.month >= 36).collect();
+        let mean_infl = mean(
+            &after_3y
+                .iter()
+                .map(|r| r.inflation_rate)
+                .collect::<Vec<_>>(),
+        );
+        let mean_unemp = mean(
+            &after_3y
+                .iter()
+                .map(|r| r.unemployment_rate)
+                .collect::<Vec<_>>(),
+        );
+        let (final_gdp, final_gini) = m
+            .last()
+            .map(|r| (r.nominal_gdp, r.gini_savings))
+            .unwrap_or((0.0, 0.0));
+
+        scenarios.push(ReproduceScenario {
+            name: name.clone(),
+            regime: name,
+            mean_inflation_3y: mean_infl,
+            mean_unemployment_3y: mean_unemp,
+            final_gdp,
+            final_gini,
+            phillips_r: phillips_correlation(m),
+            okun_r: okun_correlation(m),
+            final_month: result.final_month,
+            results_subdir: regime.label().to_string(),
+        });
+    }
+
+    // headline は progressive シナリオ (論文標準)．
+    let base = scenarios
+        .iter()
+        .find(|s| s.regime == "progressive")
+        .expect("progressive シナリオが存在する");
+
+    // --- アンカー判定 ---
+    let mut anchors: Vec<ReproduceAnchor> = Vec::new();
+    let mut push = |name: &str, paper: &str, obs: f64, lo: f64, hi: f64| {
+        anchors.push(ReproduceAnchor {
+            name: name.to_string(),
+            paper_value: paper.to_string(),
+            observed: obs,
+            target_lo: lo,
+            target_hi: hi,
+            pass: obs >= lo && obs <= hi,
+        });
+    };
+
+    // Phillips 曲線: インフレ vs 失業の負相関 (headline)．[-1, 0) 帯．
+    let phillips = base.phillips_r.unwrap_or(f64::NAN);
+    push(
+        "Phillips curve: corr(unemployment, inflation) < 0",
+        "negative",
+        phillips,
+        -1.0,
+        -1e-6,
+    );
+    // Okun の法則: GDP 成長 vs 失業変化の負相関 (headline)．[-1, 0) 帯．
+    let okun = base.okun_r.unwrap_or(f64::NAN);
+    push(
+        "Okun's law: corr(Δunemployment, GDP growth) < 0",
+        "negative",
+        okun,
+        -1.0,
+        -1e-6,
+    );
+    // インフレ率: 有限かつ有界であること (爆発・発散の検出)．
+    // 帯は «オフライン mock の健全域» であり論文のタイトな ±5% 帯ではない:
+    // ローカル proxy 意思決定は gpt-3.5-turbo と異なり水準は一致しない (設計どおり)．
+    // headline は符号 (Phillips/Okun 負) であり，水準は定性アンカーに留める．
+    push(
+        "mean inflation (3y+) bounded (offline-mock sanity, not paper level)",
+        "moderate (paper ~±5%)",
+        base.mean_inflation_3y,
+        -0.5,
+        1.0,
+    );
+    // 失業率: 有界域 (爆発検出)．論文は 2%〜12%; mock は proxy として広めに取る．
+    push(
+        "mean unemployment (3y+) bounded in [0.0, 0.30]",
+        "0.02-0.12 (paper)",
+        base.mean_unemployment_3y,
+        0.0,
+        0.30,
+    );
+
+    let n_pass = anchors.iter().filter(|a| a.pass).count();
+    let n_anchors = anchors.len();
+
+    println!("シナリオ:");
+    for s in &scenarios {
+        let ph = s
+            .phillips_r
+            .map(|r| format!("{r:.3}"))
+            .unwrap_or_else(|| "n/a".into());
+        let ok = s
+            .okun_r
+            .map(|r| format!("{r:.3}"))
+            .unwrap_or_else(|| "n/a".into());
+        println!(
+            "  [{:<12}] π̄(3y+)={:.3} ū(3y+)={:.3} GDP={:.1} Gini={:.3} | Phillips r={} Okun r={}",
+            s.name, s.mean_inflation_3y, s.mean_unemployment_3y, s.final_gdp, s.final_gini, ph, ok,
+        );
+    }
+    println!("-------------------------------------------------");
+    for a in &anchors {
+        let hi = if a.target_hi.is_infinite() {
+            "∞".to_string()
+        } else {
+            format!("{:.3}", a.target_hi)
+        };
+        println!(
+            "[{}] {:<52} obs={:.4} target=[{:.3},{}] paper={}",
+            if a.pass { "PASS" } else { "OFF " },
+            a.name,
+            a.observed,
+            a.target_lo,
+            hi,
+            a.paper_value,
+        );
+    }
+    println!("-------------------------------------------------");
+    println!("{}/{} アンカーが in-band", n_pass, n_anchors);
+
+    let summary = ReproduceSummary {
+        command: "reproduce",
+        paper: "Li et al. (2024) EconAgent — headline macro dynamics: Phillips curve (inflation vs \
+                unemployment, negative) and Okun's law (GDP growth vs unemployment change, negative)",
+        mock: args.mock,
+        quick: args.quick,
+        months,
+        n_agents: args.n_agents,
+        scenarios,
+        anchors,
+        n_pass,
+        n_anchors,
+    };
+    let path = format!("{}/reproduce_summary.json", out_dir);
+    write_json(&summary, &path).expect("reproduce_summary.json の書き込みに失敗");
+
+    let _ = refresh_latest_symlink(&args.output_dir, &format!("{}_reproduce", ts));
+
+    println!("サマリ → {}/reproduce_summary.json", out_dir);
+    println!("各シナリオの metrics.csv / run_metadata.json / config.json を各サブディレクトリに保存しました．");
+    println!("図 (マクロ時系列 + Phillips/Okun 散布) は `uv run econagent-tools reproduce` で生成できます．");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -502,5 +834,6 @@ fn main() {
     match cli.command {
         Commands::Run(args) => cmd_run(args),
         Commands::Sweep(args) => cmd_sweep(args),
+        Commands::Reproduce(args) => cmd_reproduce(args),
     }
 }

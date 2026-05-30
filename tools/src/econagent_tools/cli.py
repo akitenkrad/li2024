@@ -4,11 +4,13 @@ Usage:
     econagent-tools visualize [...]
     econagent-tools visualize-sweep [...]
     econagent-tools show-experiment-settings [...]
+    econagent-tools reproduce [...]
 
 各サブコマンドに続く引数は，対応するモジュールの argparse がそのまま受け取る．
 サブコマンドレベルで `--help` を付けると，そのサブコマンド自身のヘルプが表示される．
 
-`reproduce` (論文 Fig.2-6 / Table の一括再現・COVID 外的介入) は Phase 3 で実装予定 (未提供)．
+`reproduce` は論文 headline (Phillips 曲線 / Okun の法則 / マクロ動態) を一括再現し，
+観測相関を期待符号アンカーと突合する．
 
 dispatcher の組み立ては共有ヘルパ `socsim_tools.cli.build_dispatcher` に委譲する
 (prog 名・サブコマンド・ヘルプ文・argv ルーティングは従来と同一)．可視化/設定表示の
@@ -34,6 +36,10 @@ main = build_dispatcher(
         "show-experiment-settings": (
             "実行結果ディレクトリの設定 (config / sweep_config / run_metadata) の表示",
             "econagent_tools.show_experiment_settings:main",
+        ),
+        "reproduce": (
+            "論文 headline (Phillips 曲線 / Okun の法則 / マクロ動態) の一括再現レポート",
+            "econagent_tools.reproduce_paper:main",
         ),
     },
 )

@@ -16,6 +16,16 @@ uv run econagent-tools visualize
 
 `figures/phillips_okun.png` を見る．負の Phillips 相関と強い負の Okun 相関が論文の定性的知見の再現である．再現目標は [可視化](visualization.ja.md) を参照．
 
+headline シナリオを実行し，2 つの負符号相関アンカーを照合し，図まで一括生成するには `reproduce` を使う (実 LLM 不要のオフラインパスもある):
+
+```bash
+# オフライン (実 LLM 不要)・短縮
+cargo run --release -- reproduce --mock --quick --seed 42
+uv run econagent-tools reproduce        # 最新結果からマクロ時系列 + Phillips/Okun 散布を生成
+```
+
+`reproduce_summary.json` は観測した Phillips/Okun 相関を期待符号アンカーと PASS/off で突合する．オフライン mock は **符号** (headline) を再現する．インフレ水準は proxy であり論文の水準とは一致しない (ローカル proxy ≠ 論文の `gpt-3.5-turbo`)．
+
 ## 2. 財政政策と不平等の研究
 
 財政レジーム・税率スケールと貯蓄 Gini 係数への影響を比較する:
@@ -57,10 +67,10 @@ uv run econagent-tools show-experiment-settings --results-dir results/latest
 
 設定と LLM メタデータ (モデル・endpoint・温度・seed・cache-hit 率) を `run_metadata.json` から表示する．
 
-## 次の一手 (Phase 3, 未実装)
+## さらなる方向性
 
-- `reproduce`: 論文 Fig.2-6 / Table の一括再現．
 - COVID-19 外的介入プロンプトによる外生ショックの研究．
+- 賃金十分位別の不平等 (Gini) 分解．
 
 これらの拡張点はコードに残してある．
 

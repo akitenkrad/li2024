@@ -16,6 +16,16 @@ uv run econagent-tools visualize
 
 Look at `figures/phillips_okun.png`: a negative Phillips correlation and a strong negative Okun correlation reproduce the paper's qualitative findings. See [Visualization](visualization.md) for the reproduction targets.
 
+For a one-shot batch that runs the headline scenarios, checks the two negative-sign correlation anchors and renders the figures in a single step — including an offline, model-free path — use `reproduce`:
+
+```bash
+# offline (no live LLM), short run
+cargo run --release -- reproduce --mock --quick --seed 42
+uv run econagent-tools reproduce        # macro time series + Phillips/Okun scatter from the latest results
+```
+
+`reproduce_summary.json` records the observed Phillips/Okun correlations against the expected negative-sign anchors with PASS/off. The offline mock reproduces the **signs** (the headline); its inflation level is a proxy and does not match the paper's level (a local proxy ≠ the paper's `gpt-3.5-turbo`).
+
 ## 2. Study fiscal policy and inequality
 
 Compare fiscal regimes and tax scales and their effect on the savings Gini coefficient:
@@ -57,10 +67,10 @@ uv run econagent-tools show-experiment-settings --results-dir results/latest
 
 Prints the configuration and the LLM metadata (model, endpoint, temperature, seed, cache-hit rate) from `run_metadata.json`.
 
-## Next steps (Phase 3, not yet implemented)
+## Further directions
 
-- `reproduce`: one-shot batch of the paper's Fig. 2–6 / tables.
 - A COVID-19 external-intervention prompt to study an exogenous shock.
+- A deeper inequality (Gini) decomposition by wage decile.
 
 The code keeps clean extension points for these.
 

@@ -31,6 +31,20 @@ uv run econagent-tools visualize-sweep --sweep-dir results/latest
 - **`sweep_gini_heatmap.png`** — (税率スケール × N) 格子上の Gini (N が 2 種以上のときのみ)．
 - **`sweep_macro_by_n.png`** — N 別の平均インフレ/失業 (エージェント数に対する符号/水準の頑健性)．
 
+## `reproduce` — 論文 headline レポート
+
+```bash
+uv run econagent-tools reproduce                       # 最新の reproduce 結果から図を生成
+uv run econagent-tools reproduce --run --mock --quick  # 先に Rust バイナリ (オフライン) を実行してから図を生成
+```
+
+`reproduce_summary.json` (`econagent reproduce` が出力) を読み，シナリオ別のマクロ動態と PASS/off 相関アンカーを表示し，`{results_dir}/figures/` に描画する:
+
+- **`macro_timeseries.png`** — headline (`progressive`) シナリオのインフレ / 失業 / 名目 GDP / Gini の時系列．
+- **`phillips_okun.png`** — headline シナリオの `metrics.csv` から再計算した Phillips 曲線・Okun の法則 散布図 (scipy Pearson `r`/`p` 併記)．
+
+`--json` は描画せずサマリを出力する．`--mock` パスはオフラインでモデルを一切呼ばない．
+
 ## 再現目標 (定性的)
 
 ローカル既定モデル (`llama3.2`) は論文の `gpt-3.5-turbo` と異なるため，厳密一致ではなく定性的再現を期待する:

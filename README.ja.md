@@ -54,12 +54,12 @@ uv run econagent-tools visualize
 
 ## スコープ
 
-本リポジトリは現在 **Phase 1** (`EconWorld` + 6-phase ループ上の 5 メカニズム・Ollama→OpenAI フォールバック + キャッシュの LLM 意思決定層・`run` サブコマンド・マクロ指標) と **Phase 2** (エージェント数 × 税率スケール × LLM モデルの `sweep`・Python `visualize` / `visualize-sweep` / `show-experiment-settings`・scipy による Phillips/Okun 散布図と Pearson `r`/`p`) を実装している．論文 Fig.2-6 / Table の一括再現 (`reproduce`) と COVID-19 外的介入プロンプトは将来課題 (Phase 3) とし，拡張点を随所に残している．
+本リポジトリは `EconWorld` + 6-phase ループ上の 5 メカニズム・Ollama→OpenAI フォールバック + キャッシュの LLM 意思決定層・マクロ指標を提供する．Rust の 3 サブコマンドで駆動する: `run` (単一設定)・`sweep` (エージェント数 × 税率スケール × LLM モデルの感度分析)・`reproduce` (headline シナリオを一括実行し，Phillips 曲線と Okun の法則の相関を期待符号アンカーと突合する)．Python `econagent-tools` (`visualize` / `visualize-sweep` / `show-experiment-settings` / `reproduce`) がマクロ時系列と Phillips/Okun 散布図を scipy Pearson `r`/`p` 併記で描画する．`reproduce` とオフライン mock 意思決定クライアントにより，headline 知見は実 LLM なしで検証できる．COVID-19 外的介入プロンプトと賃金十分位別の不平等 (Gini) 分解は拡張点として残している．
 
 ## ドキュメント
 
 - [ユースケース](docs/usecases.ja.md) — 本プロジェクトでできること，および他ドキュメントへの導線．
-- [CLI](docs/cli.ja.md) — Rust CLI: `run` / `sweep` サブコマンドとフラグ，LLM 環境変数．
+- [CLI](docs/cli.ja.md) — Rust CLI: `run` / `sweep` / `reproduce` サブコマンドとフラグ，LLM 環境変数．
 - [可視化](docs/visualization.ja.md) — Python `econagent-tools` と出力の解釈 (Phillips/Okun を含む)．
 - [アーキテクチャ](docs/architecture.ja.md) — リポジトリ構成・二層決定論・socsim/`socsim-llm` 基盤・メカニズム・指標・参考文献．
 

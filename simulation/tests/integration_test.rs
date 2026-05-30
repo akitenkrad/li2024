@@ -10,7 +10,8 @@
 use econagent_simulation::config::{Config, PolicyRegime};
 use econagent_simulation::llm::{wrap_client, EconClient};
 use econagent_simulation::mechanisms::progressive_tax;
-use econagent_simulation::simulation::run_with_client;
+use econagent_simulation::metrics::{okun_correlation, phillips_correlation};
+use econagent_simulation::simulation::{mock_decision_client, run_with_client};
 
 use socsim_llm::mock::ScriptedClient;
 use socsim_llm::PromptCache;
@@ -195,4 +196,81 @@ fn different_seed_changes_employment_trajectory() {
         .map(|m| m.unemployment_rate)
         .collect();
     assert_ne!(ua, ub, "異なるシードは (一般に) 異なる就業軌跡を生む");
+}
+
+// --------------------------------------------------------------------------- //
+// reproduce 用 mock クライアント: headline (Phillips/Okun の負相関) を再現する
+// --------------------------------------------------------------------------- //
+
+/// reproduce シナリオ相当の設定 (mock decision client; ライブ LLM 不要)．
+fn reproduce_config() -> Config {
+    Config {
+        n_agents: 100,
+        months: 60,
+        memory_length: 1,
+        regime: PolicyRegime::Progressive,
+        seed: Some(42),
+        ..Config::default()
+    }
+}
+
+#[test]
+fn mock_reproduce_phillips_and_okun_are_negative() {
+    let cfg = reproduce_config();
+    let result = run_with_client(&cfg, mock_decision_client()).unwrap();
+    let m = &result.metrics_history;
+
+    let phillips = phillips_correlation(m).expect("Phillips 相関が計算できる");
+    let okun = okun_correlation(m).expect("Okun 相関が計算できる");
+
+    assert!(
+        phillips < 0.0,
+        "Phillips 曲線は負相関 (失業 ↑ で インフレ ↓) を再現すべき (got {phillips})"
+    );
+    assert!(
+        okun < 0.0,
+        "Okun の法則は負相関 (失業変化 ↑ で GDP 成長 ↓) を再現すべき (got {okun})"
+    );
+}
+
+#[test]
+fn mock_reproduce_macro_indicators_are_bounded() {
+    let cfg = reproduce_config();
+    let result = run_with_client(&cfg, mock_decision_client()).unwrap();
+    for m in &result.metrics_history {
+        assert!(
+            m.nominal_gdp.is_finite() && m.nominal_gdp >= 0.0,
+            "GDP 有限非負"
+        );
+        assert!(m.inflation_rate.is_finite(), "インフレ率は有限");
+        assert!((0.0..=1.0).contains(&m.unemployment_rate), "失業率 ∈ [0,1]");
+        assert!((0.0..=1.0).contains(&m.gini_savings), "Gini ∈ [0,1]");
+    }
+}
+
+#[test]
+fn mock_decision_client_is_bit_deterministic() {
+    // 同一シード + 同一 mock decision client → metrics が bit 単位で一致する．
+    let cfg = reproduce_config();
+    let a = run_with_client(&cfg, mock_decision_client()).unwrap();
+    let b = run_with_client(&cfg, mock_decision_client()).unwrap();
+
+    let series = |r: &econagent_simulation::simulation::SimulationResult| {
+        r.metrics_history
+            .iter()
+            .map(|m| {
+                (
+                    m.nominal_gdp.to_bits(),
+                    m.unemployment_rate.to_bits(),
+                    m.inflation_rate.to_bits(),
+                    m.gini_savings.to_bits(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        series(&a),
+        series(&b),
+        "同一シード + 同一 mock は metrics を bit 単位で再現すべき"
+    );
 }

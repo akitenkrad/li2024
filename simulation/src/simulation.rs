@@ -133,6 +133,62 @@ pub fn run(cfg: &Config) -> Result<SimulationResult, String> {
     run_with_client(cfg, client)
 }
 
+/// オフライン検証用の scripted 意思決定クライアント (ライブ LLM 不要)．
+///
+/// `reproduce`・統合テスト・サンドボックスで実 LLM を呼ばずにマクロ動態を生成する
+/// ための決定論的 mock．知覚プロンプト中の «Unemployment rate: x» と «Annual
+/// inflation: y» を読み取り，家計の労働傾向 p^w と消費傾向 p^c をマクロ環境に
+/// 応答させる «代表的家計» ルールである:
+///
+/// - 失業が高いほど **労働意欲を上げ** (職を取りに行く)．
+/// - 失業が高いほど・インフレが高いほど **消費を絞る** (予備的貯蓄 + 実質購買力の
+///   低下)．インフレへの負の感応は需要を冷ます安定化フィードバックでもあり，
+///   暴走インフレを抑えて妥当域に保つ．
+///
+/// この応答が «高失業 → 消費減 → 物価/インフレ下押し» (Phillips: 失業 vs インフレ
+/// 負相関) と «失業上昇 → 雇用/生産低下 → GDP 減» (Okun: 失業変化 vs GDP 成長
+/// 負相関) を創発させる．本番 LLM の代理であり論文値の厳密一致は狙わない (符号と
+/// 妥当域の定性再現が目的)．`temperature=0` 同様にプロンプトに対して純関数的なので
+/// cache を介さずとも bit 決定論的．リフレクションプロンプト (JSON 要求を含まない)
+/// には短い所感を返す．
+pub fn mock_decision_client() -> EconClient {
+    use crate::llm::wrap_client;
+    use socsim_llm::mock::ScriptedClient;
+    use socsim_llm::PromptCache;
+
+    let backend = ScriptedClient::new("mock-econagent", |prompt: &str| {
+        if !prompt.contains("Answer with JSON only") {
+            // リフレクション: 短い所感 (指標には影響しない)．
+            return "The economy felt stable; I will keep working and consume moderately."
+                .to_string();
+        }
+        let u = parse_marker(prompt, "Unemployment rate: ").unwrap_or(0.1);
+        let infl = parse_marker(prompt, "Annual inflation: ").unwrap_or(0.0);
+        // 労働: 0.78 + 0.4·u (高失業ほど職を取りに行く)．
+        let work = (0.78 + 0.40 * u).clamp(0.0, 1.0);
+        // 消費: 0.30 − 0.5·u − 0.6·infl (高失業/高インフレで消費を絞る安定化応答)．
+        // ベースを抑えて需要≈供給に保ち暴走インフレを避ける．
+        let consume = (0.30 - 0.50 * u - 0.60 * infl).clamp(0.05, 1.0);
+        format!("{{\"work\": {work:.4}, \"consume\": {consume:.4}}}")
+    });
+    wrap_client(backend, PromptCache::in_memory())
+}
+
+/// 知覚プロンプトの «{marker}0.123» 形式の行から数値を読む (mock 用)．
+///
+/// 先頭の `-` (負のインフレ) も許容する．
+fn parse_marker(prompt: &str, marker: &str) -> Option<f64> {
+    let idx = prompt.find(marker)?;
+    let rest = &prompt[idx + marker.len()..];
+    let num: String = rest
+        .chars()
+        .enumerate()
+        .take_while(|(i, c)| c.is_ascii_digit() || *c == '.' || (*i == 0 && *c == '-'))
+        .map(|(_, c)| c)
+        .collect();
+    num.parse::<f64>().ok()
+}
+
 /// 与えられた [`EconClient`] でシミュレーションを実行する．
 ///
 /// 本番は [`build_live_client`] の結果を，テストは [`crate::llm::wrap_client`] で

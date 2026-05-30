@@ -54,12 +54,12 @@ uv run econagent-tools visualize
 
 ## Scope
 
-This repository currently implements **Phase 1** (the `EconWorld` + five mechanisms over the six-phase loop, the LLM decision layer with Ollama→OpenAI fallback + caching, the `run` subcommand, and the macro metrics) and **Phase 2** (the `sweep` over agent count × tax-scale × LLM model, plus the Python `visualize` / `visualize-sweep` / `show-experiment-settings` tools, including the Phillips-curve and Okun's-law scatter with scipy Pearson `r`/`p`). The one-shot paper reproduction (`reproduce`, Fig. 2–6 / Table batch) and the COVID-19 external-intervention prompt are left as future work (Phase 3); clean extension points are kept throughout.
+The repository provides the `EconWorld` + five mechanisms over the six-phase loop, the LLM decision layer with Ollama→OpenAI fallback + caching, and the macro metrics. Three Rust subcommands drive it: `run` (a single configuration), `sweep` (a sensitivity analysis over agent count × tax-scale × LLM model), and `reproduce` (a one-shot batch of the headline scenarios that checks the Phillips-curve and Okun's-law correlations against the expected negative-sign anchors). The Python `econagent-tools` (`visualize` / `visualize-sweep` / `show-experiment-settings` / `reproduce`) render the macro time series and the Phillips/Okun scatter with scipy Pearson `r`/`p`. `reproduce` and the offline mock decision client make the headline result verifiable without a live LLM. A COVID-19 external-intervention prompt and a deeper inequality (Gini) decomposition are kept as clean extension points.
 
 ## Documentation
 
 - [Use cases](docs/usecases.md) — what you can do with this project, with pointers to the rest of the docs.
-- [CLI](docs/cli.md) — the Rust CLI: the `run` and `sweep` subcommands and their flags, plus the LLM environment variables.
+- [CLI](docs/cli.md) — the Rust CLI: the `run`, `sweep` and `reproduce` subcommands and their flags, plus the LLM environment variables.
 - [Visualization](docs/visualization.md) — the Python `econagent-tools` and how to interpret the outputs (incl. Phillips/Okun).
 - [Architecture](docs/architecture.md) — repository structure, the two-layer determinism, the socsim/`socsim-llm` framework, the mechanisms, the metrics, and references.
 
