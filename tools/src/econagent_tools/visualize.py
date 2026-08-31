@@ -2,15 +2,23 @@
 """
 visualize.py — Li et al. (2024) EconAgent マクロ経済シミュレーション 可視化スクリプト
 
-results/latest (または --results_dir 指定先) の metrics.csv を読み，
+runvault の run ディレクトリの `metrics.csv` を読み，
 (1) マクロ指標時系列図 (インフレ率・失業率・名目 GDP・Gini 係数) と，
 (2) Phillips 曲線 (インフレ率 vs 失業率) ・Okun の法則 (GDP 成長率 vs 失業率変化)
     の散布図 (Pearson 相関 r / p 値を scipy で算出して併記) を生成する．
 
+どの run を見るかは `--results-dir` を省略すれば runvault が答える
+(`runvault path --experiment econagent --latest --subcommand run --standalone`)．
+`results/` を自分で走査して新しそうなディレクトリを当てにいくことはしない．
+
+図は run ディレクトリの *隣* (`results/econagent/figures/<run_slug>/`) に置く．
+`manifest.csv` は `finish()` が確定させたもので，run が終わった後に足したものは
+そこに載らないためである．
+
 Usage:
     uv run econagent-tools visualize
-    uv run econagent-tools visualize --results_dir results/20260524_153000
-    uv run econagent-tools visualize --output_dir out
+    uv run econagent-tools visualize --results-dir "$(runvault path --experiment econagent --latest --subcommand run --standalone)"
+    uv run econagent-tools visualize --output-dir out
 
 Outputs:
     output_dir/
@@ -26,12 +34,19 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from runvault.read import figures_dir, metrics_wide, runvault_path
 from scipy import stats
 
+# runvault の experiment 名 (Rust 側 record::EXPERIMENT と揃える)．
+EXPERIMENT = "econagent"
+
 # --------------------------------------------------------------------------- #
-# 日本語フォント設定
+# 日本語フォント設定 (CJK フォントが利用不能でも落ちないように try)
 # --------------------------------------------------------------------------- #
-plt.rcParams["font.family"] = "Hiragino Sans"
+try:
+    plt.rcParams["font.family"] = "Hiragino Sans"
+except Exception:  # pragma: no cover - フォント未インストール環境用フォールバック
+    pass
 
 # --------------------------------------------------------------------------- #
 # カラー設定
@@ -45,10 +60,20 @@ COLOR_SCATTER = "#FF9800"
 
 
 def load_metrics(path: str) -> pd.DataFrame:
-    """metrics.csv (wide-format: month, year, nominal_gdp, ... ) を読み込む．"""
+    """月次のマクロ指標を 1 か月 1 行の表として読む．
+
+    runvault の `metrics.csv` は long 形式なので `metrics_wide` で横に倒す．時間軸の
+    列名は runvault では `step` だが，本モデルの表記は論文に合わせた `month` なので
+    こちら側の呼び名に揃えてから返す (legacy の wide な metrics.csv はもともと
+    `month` 列を持つので何もしない)．legacy が持つ `year` 列は使わない — `month`
+    から一意に決まる導出値である．
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"metrics.csv が見つかりません: {path}")
-    return pd.read_csv(path)
+    df = metrics_wide(path)
+    if "step" in df.columns and "month" not in df.columns:
+        df = df.rename(columns={"step": "month"})
+    return df
 
 
 def save_macro_timeseries(df: pd.DataFrame, out_path: str) -> None:
@@ -184,16 +209,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Li et al. (2024) EconAgent マクロ経済 可視化スクリプト",
     )
     p.add_argument(
-        "--results_dir",
         "--results-dir",
-        default="results/latest",
-        help="Rust シミュレーションの出力ディレクトリ (default: results/latest)",
+        "--results_dir",
+        default=None,
+        help="run ディレクトリ (省略時は runvault path が返す直近の run)",
     )
     p.add_argument(
-        "--output_dir",
+        "--results-root",
+        "--results_root",
+        default="results",
+        help="runvault の results ルート (default: results)",
+    )
+    p.add_argument(
         "--output-dir",
+        "--output_dir",
         default=None,
-        help="図の保存先ディレクトリ (default: {results_dir}/figures)",
+        help="図の保存先 (既定: <results-root>/econagent/figures/<run_slug>)",
     )
     return p.parse_args(argv)
 
@@ -201,8 +232,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    metrics_path = os.path.join(args.results_dir, "metrics.csv")
-    out_dir = args.output_dir if args.output_dir else os.path.join(args.results_dir, "figures")
+    results_dir = args.results_dir or runvault_path(
+        EXPERIMENT,
+        results_root=args.results_root,
+        subcommand="run",
+        standalone=True,
+    )
+    metrics_path = os.path.join(results_dir, "metrics.csv")
+    out_dir = args.output_dir if args.output_dir else figures_dir(results_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     print("=== Li et al. (2024) EconAgent マクロ経済 可視化 ===")

@@ -13,7 +13,7 @@ LLM 出力は socsim の bit 再現性の **外側** にある．したがって
 - **決定論的 socsim コア** — 家計初期化 (パレート賃金・年齢分布)・就業 Bernoulli ドロー・市場調整一様乱数 (`ctx.rng`, ChaCha20)・スケジューリング・財政/金融会計・全指標．seed を固定すれば bit 単位で再現する．
 - **非決定的 LLM レイヤ** — 毎月の労働/消費決定と四半期リフレクション．`socsim-llm` の `CachingClient` (`hash(prompt+model)` → 応答キャッシュ)・`temperature=0`・固定 seed で擬似決定論化する．プロバイダ順序は `socsim-llm` の `FallbackClient` による «Ollama 第一 → OpenAI フォールバック»．
 
-再現性の本体はモデルではなく **キャッシュ** である．ウォームキャッシュは同一応答を再生するため，再実行は無料かつ安定する (論文は 1 シミュレーション約 30 ドル・約 2 時間と記す)．各実行は `run_metadata.json` にモデル・endpoint・温度・seed・cache-hit 率を記録する．ローカル既定モデル (`llama3.2`) は論文の `gpt-3.5-turbo` と異なるため，再現目標は **定性的** とする: Phillips 相関が負 (`r < 0`)・Okun 相関が負 (`r < 0`)・インフレ/失業が妥当な範囲，であって厳密な `r = −0.619` / `r = −0.918` ではない．
+再現性の本体はモデルではなく **キャッシュ** である．ウォームキャッシュは同一応答を再生するため，再実行は無料かつ安定する (論文は 1 シミュレーション約 30 ドル・約 2 時間と記す)．各実行はモデル・provider・温度を `run.json` の `llm` ブロックに，呼び出し数と cache-hit 率を run スコープの指標として記録する．ローカル既定モデル (`llama3.2`) は論文の `gpt-3.5-turbo` と異なるため，再現目標は **定性的** とする: Phillips 相関が負 (`r < 0`)・Okun 相関が負 (`r < 0`)・インフレ/失業が妥当な範囲，であって厳密な `r = −0.619` / `r = −0.918` ではない．
 
 > 本プロジェクトは LLM レイヤを `socsim-llm` クレットに標準化しており，`reqwest` は **使わない** (HTTP は socsim-llm が所有する)．相互作用は市場仲介なので空間格子・ネットワーク (`socsim-grid` / `socsim-net`) は不要であり，依存は `socsim-core` + `socsim-engine` + `socsim-llm` のみである．
 
@@ -40,7 +40,7 @@ uv sync
 uv run econagent-tools visualize
 
 # 実行設定と LLM メタデータの確認
-uv run econagent-tools show-experiment-settings --results-dir results/latest
+uv run econagent-tools show-experiment-settings   # 直近の run は runvault が解決する
 ```
 
 ### オフライン (LLM 不要) スモーク

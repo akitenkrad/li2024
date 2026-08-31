@@ -9,10 +9,10 @@ replications/li2024/
 ├── Cargo.toml                  # Rust workspace (members = ["simulation"])
 ├── pyproject.toml              # uv workspace (members = ["tools"])
 ├── simulation/                 # Rust crate `econagent-simulation` (bin `econagent`)
-│   ├── Cargo.toml              # socsim-core + socsim-engine + socsim-llm (features=["live"])
+│   ├── Cargo.toml              # socsim-core + socsim-engine + socsim-llm (features=["live"]) + runvault
 │   ├── examples/mock_smoke.rs  # オフライン (ライブ LLM 不要) スモーク
 │   ├── src/
-│   │   ├── main.rs             # clap: run / sweep
+│   │   ├── main.rs             # clap: run / sweep / reproduce (1 回が runvault の run 1 本)
 │   │   ├── lib.rs
 │   │   ├── config.rs           # Config・PolicyRegime・税制スケジュール・LLM 設定
 │   │   ├── world.rs            # EconWorld (WorldState)・Household・MacroEnv
@@ -20,13 +20,15 @@ replications/li2024/
 │   │   ├── llm.rs              # socsim-llm ビルダ (Ollama→OpenAI + キャッシュ)
 │   │   ├── prompts.rs          # 知覚/リフレクションプロンプト + 応答パース
 │   │   ├── metrics.rs          # GDP / インフレ / 失業 / Gini / 傾向
-│   │   └── simulation.rs       # init_world + run ドライバ + 出力ライタ
+│   │   ├── record.rs           # runvault: 論文メタデータ・llm ブロック・指標・集約
+│   │   └── simulation.rs       # init_world + run ドライバ (run_with_client)
 │   └── tests/integration_test.rs   # mock 駆動 (ScriptedClient); ライブ LLM 不要
 ├── tools/                      # Python package `econagent-tools` (module `econagent_tools`)
 │   └── src/econagent_tools/
 │       ├── cli.py
 │       ├── visualize.py        # マクロ指標時系列 + Phillips/Okun 散布 (scipy)
-│       ├── visualize_sweep.py  # 税率スケール / N / モデル比較
+│       ├── visualize_sweep.py  # 税率スケール / N / モデル比較 (子 run から組み直す)
+│       ├── reproduce_paper.py  # reproduce 親 run からの論文 headline レポート
 │       └── show_experiment_settings.py
 └── docs/                       # bilingual (.md + .ja.md)
 ```
@@ -72,7 +74,7 @@ LLM クライアント・メタデータコレクタ・月次指標バッファ�
 
 ## 指標
 
-`metrics.csv` は 1 月 = 1 行の wide 形式: `month, year, nominal_gdp, price, interest_rate, unemployment_rate, inflation_rate, gini_savings, avg_work_propensity, avg_consume_propensity, redistribution`．Phillips 曲線 (インフレ vs 失業) と Okun の法則 (GDP 成長 vs 失業変化) の Pearson 相関は，このファイルから Python (scipy) で計算する．
+`metrics.csv` は runvault の long 形式 (`run_uid, step, step_unit, scope, name, value`)．月は時間軸そのもの (`step`，`step_unit = round` — 語彙に `month` は無く，1 刻みは知覚 → 意思決定 → 市場清算 → 財政 → 金融 → 記憶更新の 1 巡である)．月次の 9 つの量は旧列名のまま `scope=run` のステップ指標になる: `nominal_gdp, price, interest_rate, unemployment_rate, inflation_rate, gini_savings, avg_work_propensity, avg_consume_propensity, redistribution`．旧 `year` 列は無い — `month / 12` で時間軸から導出される値だからである．`final_month`・`llm_calls`・`llm_cache_hits`・`llm_cache_hit_rate` は step を持たない `scope=run` 指標．Phillips 曲線 (インフレ vs 失業) と Okun の法則 (GDP 成長 vs 失業変化) の Pearson 相関は，これらの指標から Rust (`reproduce` のアンカー用) と Python (scipy; 図用) の双方で計算する．
 
 ## 参考文献
 

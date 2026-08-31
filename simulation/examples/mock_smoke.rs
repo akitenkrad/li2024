@@ -1,9 +1,9 @@
 //! Mock 駆動のスモーク実行 (ライブ LLM 不要)．
 //!
 //! ライブ Ollama/OpenAI が使えない環境 (CI・ネットワーク遮断サンドボックス) で
-//! 出力パイプライン (metrics.csv / run_metadata.json / config.json) と Python
-//! 可視化を検証するための補助バイナリ．`socsim-llm::mock::ScriptedClient` で
-//! 決定論的に意思決定を駆動し，本番 `run` と同じ writer で結果を書き出す．
+//! 出力パイプライン (run ディレクトリ・metrics.csv / config.json) と Python 可視化を
+//! 検証するための補助バイナリ．`socsim-llm::mock::ScriptedClient` で決定論的に意思
+//! 決定を駆動し，本番 `run` と同じ runvault の run へ書く．
 //!
 //! ```bash
 //! cargo run --release --example mock_smoke -- results
@@ -11,27 +11,23 @@
 
 use std::env;
 
-use socsim_results::{refresh_latest_symlink, timestamp, write_json};
+use runvault::{Run, RunOptions};
 
 use econagent_simulation::config::Config;
 use econagent_simulation::llm::wrap_client;
-use econagent_simulation::simulation::{
-    ensure_output_dir, run_with_client, save_metrics, save_run_metadata,
-};
+use econagent_simulation::record::{self, DOMAIN, EXPERIMENT, REPO_ID};
+use econagent_simulation::simulation::run_with_client;
 use socsim_llm::mock::ScriptedClient;
-use socsim_llm::PromptCache;
+use socsim_llm::{LlmClient, PromptCache};
 
 fn main() {
     let base = env::args().nth(1).unwrap_or_else(|| "results".to_string());
-    let timestamp = timestamp();
-    let output_dir = format!("{base}/{timestamp}");
 
     let cfg = Config {
         n_agents: 20,
         months: 36,
         memory_length: 2,
         seed: Some(42),
-        output_dir: output_dir.clone(),
         ..Config::default()
     };
 
@@ -55,20 +51,33 @@ fn main() {
     });
     let client = wrap_client(backend, PromptCache::in_memory());
 
-    ensure_output_dir(&cfg.output_dir);
+    // クライアントは run を開始する前に組む (`llm` ブロックのため)．
+    let llm = record::llm_block(
+        client.inner().model(),
+        client.inner().endpoint(),
+        cfg.llm.temperature,
+    );
+    let parameters = cfg.to_run_config_json();
+    let mut rv = Run::start(
+        RunOptions::new(EXPERIMENT, "run")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&base)
+            .parameters(&parameters)
+            .expect("runvault: parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .master_seed(cfg.seed.expect("mock smoke は seed を固定する"))
+            .llm(llm)
+            .replication(record::replication()),
+    )
+    .expect("runvault: run の開始に失敗");
+
     let result = run_with_client(&cfg, client).expect("mock run failed");
-    save_metrics(&result.metrics_history, &cfg.output_dir);
-    save_run_metadata(&result, &cfg, &cfg.output_dir);
-
-    // config.json (socsim_results::write_json に委譲)．
-    let cfg_path = format!("{}/config.json", cfg.output_dir);
-    write_json(&cfg.to_run_config_json(), &cfg_path).unwrap();
-
-    // latest symlink (socsim_results に委譲)．
-    let _ = refresh_latest_symlink(&base, &timestamp);
+    record::log_simulation(&mut rv, &result);
+    let dir = rv.finish().expect("runvault: run の完了に失敗");
 
     let last = result.metrics_history.last().unwrap();
-    println!("mock smoke wrote: {output_dir}");
+    println!("mock smoke wrote: {}", dir.display());
     println!(
         "final month={} GDP={:.1} unemployment={:.3} inflation={:.3} gini={:.3}",
         result.final_month,

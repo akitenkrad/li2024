@@ -7,10 +7,11 @@
 ## `visualize` — 単一実行の図
 
 ```bash
-uv run econagent-tools visualize --results-dir results/latest
+uv run econagent-tools visualize                    # 直近の run は runvault が解決する
+uv run econagent-tools visualize --results-dir "$(runvault path --experiment econagent --latest --subcommand run --standalone)"
 ```
 
-`metrics.csv` を読み，`{results_dir}/figures/` に出力する:
+run ディレクトリの `metrics.csv` (long 形式．時間軸 `step` は `month` として読み戻す) を読み，run の **隣** の `{results-root}/econagent/figures/{run_slug}/` に出力する — `manifest.csv` は `finish()` が確定させるので，後から足したものを run の中に置いてはならない:
 
 - **`macro_timeseries.png`** — インフレ率・失業率・名目 GDP・貯蓄 Gini 係数の時系列 (2×2)．インフレ図は −5%…5% 帯，失業図は 2%…12% 帯を薄く塗る (論文の妥当範囲)．
 - **`phillips_okun.png`** — 最小二乗回帰直線とタイトルに Pearson `r`/`p` (scipy) を付した 2 つの散布図:
@@ -22,10 +23,11 @@ Pearson `r`/`p` は標準出力にも表示する．
 ## `visualize-sweep` — スイープ比較
 
 ```bash
-uv run econagent-tools visualize-sweep --sweep-dir results/latest
+uv run econagent-tools visualize-sweep              # 直近のスイープ親は runvault が解決する
+uv run econagent-tools visualize-sweep --sweep-dir "$(runvault path --experiment econagent --latest --subcommand sweep)"
 ```
 
-`sweep_summary.csv` を読み，`{sweep_dir}/figures/` に出力する:
+スイープ親の子 run (`subcommand=sweep-point`) から 1 行 1 試行の表を組み直し (runvault はこの表をディスクに持たない)，`{results-root}/econagent/figures/{run_slug}/` に出力する．指定したディレクトリに runvault 以前の `sweep_summary.csv` があればそちらを読む:
 
 - **`sweep_gini_by_taxscale.png`** — 税率スケール別の平均最終 Gini と平均 3 年目以降失業率 (再分配効果: 税率スケール↑ → Gini↓)．
 - **`sweep_gini_heatmap.png`** — (税率スケール × N) 格子上の Gini (N が 2 種以上のときのみ)．
@@ -38,12 +40,12 @@ uv run econagent-tools reproduce                       # 最新の reproduce 結
 uv run econagent-tools reproduce --run --mock --quick  # 先に Rust バイナリ (オフライン) を実行してから図を生成
 ```
 
-`reproduce_summary.json` (`econagent reproduce` が出力) を読み，シナリオ別のマクロ動態と PASS/off 相関アンカーを表示し，`{results_dir}/figures/` に描画する:
+`reproduce` の親 run を読む: シナリオをまたいだ観測値は親の `metrics.csv` の `scope=sweep` 行，論文の報告値は `reference.csv`，レジームごとの月次系列は子 run から採る．シナリオ別のマクロ動態と «観測 vs 論文値» の差を表示し，`{results-root}/econagent/figures/{run_slug}/` に描画する:
 
 - **`macro_timeseries.png`** — headline (`progressive`) シナリオのインフレ / 失業 / 名目 GDP / Gini の時系列．
 - **`phillips_okun.png`** — headline シナリオの `metrics.csv` から再計算した Phillips 曲線・Okun の法則 散布図 (scipy Pearson `r`/`p` 併記)．
 
-`--json` は描画せずサマリを出力する．`--mock` パスはオフラインでモデルを一切呼ばない．
+`--json` は描画せずサマリを出力する．`--mock` パスはオフラインでモデルを一切呼ばない．帯つきの PASS/off 判定はここでは繰り返さない — 帯は論文ではなく本実装が置いたもので，同じ閾値を Rust と Python の 2 箇所に置かないためである (判定は `econagent reproduce` が出す)．runvault 以前の `results/{timestamp}_reproduce/` を `--results-dir` に渡した場合は `reproduce_summary.json` を読む従来の経路で処理する．
 
 ## 再現目標 (定性的)
 

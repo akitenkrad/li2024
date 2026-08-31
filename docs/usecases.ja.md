@@ -24,7 +24,7 @@ cargo run --release -- reproduce --mock --quick --seed 42
 uv run econagent-tools reproduce        # 最新結果からマクロ時系列 + Phillips/Okun 散布を生成
 ```
 
-`reproduce_summary.json` は観測した Phillips/Okun 相関を期待符号アンカーと PASS/off で突合する．オフライン mock は **符号** (headline) を再現する．インフレ水準は proxy であり論文の水準とは一致しない (ローカル proxy ≠ 論文の `gpt-3.5-turbo`)．
+`econagent reproduce` は観測した Phillips/Okun 相関を期待符号アンカーと PASS/off で突合して表示し，観測値を親 run の `scope=sweep` 指標として記録する (論文 Fig. 3 の値は `reference.csv`)．オフライン mock は **符号** (headline) を再現する．インフレ水準は proxy であり論文の水準とは一致しない (ローカル proxy ≠ 論文の `gpt-3.5-turbo`)．
 
 ## 2. 財政政策と不平等の研究
 
@@ -62,10 +62,10 @@ cargo test            # mock 駆動; ライブ LLM 不要
 ## 5. 実行内容の確認
 
 ```bash
-uv run econagent-tools show-experiment-settings --results-dir results/latest
+uv run econagent-tools show-experiment-settings   # 直近の run は runvault が解決する
 ```
 
-設定と LLM メタデータ (モデル・endpoint・温度・seed・cache-hit 率) を `run_metadata.json` から表示する．
+条件は `config.json` の `parameters`，LLM ブロック (provider・モデル・温度) は `run.json`，LLM 呼び出し数と cache-hit は `metrics.csv` から表示する．runvault 以前の `results/{timestamp}/config.json` や `results/{timestamp}_sweep/sweep_config.json` を `--results-dir` に渡しても読める．
 
 ## さらなる方向性
 

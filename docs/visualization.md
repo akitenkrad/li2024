@@ -7,10 +7,11 @@ Install at the workspace root with `uv sync`, then invoke via `uv run econagent-
 ## `visualize` — single-run figures
 
 ```bash
-uv run econagent-tools visualize --results-dir results/latest
+uv run econagent-tools visualize                    # runvault resolves the latest run
+uv run econagent-tools visualize --results-dir "$(runvault path --experiment econagent --latest --subcommand run --standalone)"
 ```
 
-Reads `metrics.csv` and writes to `{results_dir}/figures/`:
+Reads the run directory's `metrics.csv` (long form; the time axis `step` is read back as `month`) and writes **beside** the run, into `{results-root}/econagent/figures/{run_slug}/` — `manifest.csv` is settled by `finish()`, so anything added afterwards must not go inside the run:
 
 - **`macro_timeseries.png`** — a 2×2 panel of inflation rate, unemployment rate, nominal GDP and the savings Gini coefficient over time. The inflation panel shades the −5%…5% band and the unemployment panel the 2%…12% band (the paper's plausible ranges).
 - **`phillips_okun.png`** — two scatter plots with least-squares fit lines and Pearson `r`/`p` (scipy) in the title:
@@ -22,10 +23,11 @@ The Pearson `r`/`p` are also printed to stdout.
 ## `visualize-sweep` — sweep comparison
 
 ```bash
-uv run econagent-tools visualize-sweep --sweep-dir results/latest
+uv run econagent-tools visualize-sweep              # runvault resolves the latest sweep parent
+uv run econagent-tools visualize-sweep --sweep-dir "$(runvault path --experiment econagent --latest --subcommand sweep)"
 ```
 
-Reads `sweep_summary.csv` and writes to `{sweep_dir}/figures/`:
+Rebuilds the one-row-per-trial table from the sweep parent's children (`subcommand=sweep-point`) — runvault keeps no such table on disk — and writes into `{results-root}/econagent/figures/{run_slug}/`. A pre-runvault `sweep_summary.csv`, if present in the given directory, is read instead:
 
 - **`sweep_gini_by_taxscale.png`** — mean final Gini and mean 3-year-onward unemployment by tax-scale (the redistribution effect: higher tax-scale → lower Gini).
 - **`sweep_gini_heatmap.png`** — Gini over the (tax-scale × N) grid (only when more than one N is present).
@@ -38,12 +40,12 @@ uv run econagent-tools reproduce                       # render from the latest 
 uv run econagent-tools reproduce --run --mock --quick  # run the Rust binary first (offline), then render
 ```
 
-Reads `reproduce_summary.json` (written by `econagent reproduce`), prints the per-scenario macro dynamics and the PASS/off correlation anchors, and renders into `{results_dir}/figures/`:
+Reads the `reproduce` parent run: the cross-scenario observations from the `scope=sweep` rows of its `metrics.csv`, the paper's reported values from `reference.csv`, and each regime's monthly series from the child runs. Prints the per-scenario macro dynamics and the observed-vs-paper differences, then renders into `{results-root}/econagent/figures/{run_slug}/`:
 
 - **`macro_timeseries.png`** — inflation / unemployment / nominal GDP / Gini over time for the headline (`progressive`) scenario.
 - **`phillips_okun.png`** — the Phillips-curve and Okun's-law scatter with scipy Pearson `r`/`p`, recomputed from the headline scenario's `metrics.csv`.
 
-`--json` prints the summary without rendering. The `--mock` path is offline and contacts no model.
+`--json` prints the summary without rendering. The `--mock` path is offline and contacts no model. The banded PASS/off verdict is **not** repeated here — the bands are this implementation's, not the paper's, and the same threshold must not live in both Rust and Python; `econagent reproduce` prints it. A pre-runvault `results/{timestamp}_reproduce/` passed to `--results-dir` is still read through its `reproduce_summary.json`.
 
 ## Reproduction targets (qualitative)
 

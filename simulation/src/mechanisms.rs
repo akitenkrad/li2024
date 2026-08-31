@@ -353,7 +353,6 @@ impl Mechanism<EconWorld> for FiscalRewardMechanism {
 
         let metric = MacroMetrics {
             month: month as usize,
-            year: (month / 12) as usize,
             nominal_gdp: gdp,
             price: ctx.world.env.price,
             interest_rate: ctx.world.env.interest_rate,

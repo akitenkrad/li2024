@@ -39,13 +39,15 @@ cargo run --release -- run \
 | `--cache-path` | `.llm_cache/cache.json` | prompt→response cache file |
 | `--output-dir` | `results` | output base directory |
 
-Outputs to `results/{timestamp}/`: `config.json`, `metrics.csv`, `run_metadata.json`, and a `results/latest` symlink.
+One subcommand invocation is one runvault run. The run directory is created and named by runvault under `{output-dir}/econagent/run_{timestamp}_{hash}_{suffix}/` — this repository no longer makes timestamped directories or a `results/latest` symlink. The directory holds `run.json` (including the `llm` block: provider, model, temperature), `config.json` (the envelope; the conditions are under `parameters`), `metrics.csv` (long form) and `status.json`.
+
+Resolve the latest run with `runvault path --experiment econagent --latest --subcommand run --standalone`.
 
 A quick offline-friendly smoke for the real-LLM path: `--n-agents 4 --months 12 --seed 42`.
 
 ## `sweep` — sensitivity analysis
 
-Sweeps over agent count × tax-scale × LLM model, with custom aggregation into `sweep_summary.csv`:
+Sweeps over agent count × tax-scale × LLM model as one sweep parent run plus one child run per (cell × trial):
 
 ```bash
 cargo run --release -- sweep \
@@ -65,7 +67,7 @@ cargo run --release -- sweep \
 | `--runs` | 3 | independent trials per condition (distinct derived seeds) |
 | `--seed` | 42 | base seed; each cell derives an independent stream |
 
-Each `sweep_summary.csv` row records per-condition aggregates: 3-year-onward mean inflation/unemployment, final GDP, final Gini, mean work/consume propensity and the cache-hit rate. Outputs to `results/{timestamp}_sweep/` with `sweep_config.json`.
+The parent run (`--subcommand sweep`) carries the grid definition in its `config.json` `parameters` and records no per-condition metrics. Each child (`--subcommand sweep-point`) is one simulation with the same `parameters` shape as a hand-run `run`, its own `master_seed` and `replicate_index`, and its full monthly `metrics.csv`. The old `sweep_summary.csv` columns (3-year-onward mean inflation/unemployment, final GDP, final Gini, mean work/consume propensity, cache-hit rate) are all derivable from the children, so they are rebuilt on demand by `econagent-tools visualize-sweep` rather than written twice.
 
 ## `reproduce` — paper headline (Phillips curve / Okun's law / macro dynamics)
 
@@ -90,7 +92,7 @@ OLLAMA_MODEL=llama3.2:latest cargo run --release -- reproduce --seed 42
 | `--cache-path` | `.llm_cache/cache.json` | prompt→response cache (live path only) |
 | `--output-dir` | `results` | output base directory |
 
-Computes the **Phillips curve** correlation (unemployment vs inflation, expected negative) and **Okun's law** correlation (Δunemployment vs GDP growth, expected negative) from each scenario's `metrics.csv`, and writes `reproduce_summary.json` with the observed correlations and PASS/off anchors (the two negative-sign headline anchors plus bounded inflation/unemployment sanity ranges). Each scenario's `metrics.csv` / `run_metadata.json` / `config.json` are saved under `results/{timestamp}_reproduce/{regime}/`. The `--mock` path is bit-deterministic and contacts no model; the level of inflation under the offline mock is a proxy and does not match the paper's level (a local proxy ≠ the paper's `gpt-3.5-turbo`) — the headline result is the **sign** of the two correlations.
+Each regime runs its own world, so a scenario is a child run (`--subcommand reproduce-scenario`) holding that regime's full monthly `metrics.csv`. The parent (`--subcommand reproduce`) records the quantities the reproduction is judged on as `scope=sweep` metrics, with the condition folded into the name: `mean_inflation_3y_{regime}`, `mean_unemployment_3y_{regime}`, `phillips_r_{regime}` (unemployment vs inflation, expected negative) and `okun_r_{regime}` (Δunemployment vs GDP growth, expected negative). The paper's reported values — Figure 3's `r = -0.619` and `r = -0.918` — go to `reference.csv` with their sources; the acceptance bands are this implementation's own, so they are printed on the console and not recorded. The `--mock` path is bit-deterministic and contacts no model; the level of inflation under the offline mock is a proxy and does not match the paper's level (a local proxy ≠ the paper's `gpt-3.5-turbo`) — the headline result is the **sign** of the two correlations.
 
 Generate the figures (macro time series + Phillips/Okun scatter with scipy `r`/`p`) with `uv run econagent-tools reproduce`.
 

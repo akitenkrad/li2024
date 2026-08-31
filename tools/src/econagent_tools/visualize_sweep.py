@@ -2,17 +2,22 @@
 """
 visualize_sweep.py — Li et al. (2024) EconAgent スイープ結果 可視化スクリプト
 
-results/latest (または --sweep_dir 指定先) の sweep_summary.csv を読み，
+スイープ親 run の子 (`subcommand=sweep-point`) から 1 行 1 試行の表を組み直し，
 税率スケール × エージェント数 × LLM モデルの格子について，最終 Gini 係数・
-3 年目以降の平均失業率/インフレ率・平均消費傾向を集計し，棒グラフ/ヒートマップで
+3 年目以降の平均失業率/インフレ率・平均消費傾向を集計して棒グラフ/ヒートマップで
 可視化する (政策レジーム・税率スケール・N 比較)．
+
+runvault はこの表をディスクに持たない．各子 run が «そのセルの試行 1 本» の月次
+指標を丸ごと持っているので，そこから旧 `sweep_summary.csv` と同じ列を作る．
+runvault 以前のスイープには `sweep_summary.csv` が残っているので，あればそちらを
+読む — そちらが正本だった時期の結果を読めなくする理由はない．
 
 Usage:
     uv run econagent-tools visualize-sweep
-    uv run econagent-tools visualize-sweep --sweep_dir results/20260524_160000_sweep
+    uv run econagent-tools visualize-sweep --sweep-dir "$(runvault path --experiment econagent --latest --subcommand sweep)"
 
 Outputs:
-    output_dir/
+    <results-root>/econagent/figures/<run_slug>/
     ├── sweep_gini_by_taxscale.png   ← 税率スケール別の Gini / 失業率 (再分配効果)
     ├── sweep_gini_heatmap.png       ← Gini (tax_scale × N) ヒートマップ
     └── sweep_macro_by_n.png         ← N 別のインフレ・失業 (頑健性確認)
@@ -26,18 +31,76 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from runvault.read import (
+    config_parameters,
+    figures_dir,
+    load_run_meta,
+    metrics_wide,
+    run_scope_metrics,
+    runvault_path,
+    sweep_children,
+)
 
-plt.rcParams["font.family"] = "Hiragino Sans"
+# runvault の experiment 名 (Rust 側 record::EXPERIMENT と揃える)．
+EXPERIMENT = "econagent"
+
+try:
+    plt.rcParams["font.family"] = "Hiragino Sans"
+except Exception:  # pragma: no cover - フォント未インストール環境用フォールバック
+    pass
 
 COLOR_BG = "#FAFAF8"
 
 
+def _child_row(child_dir: str) -> dict:
+    """子 run 1 本を旧 `sweep_summary.csv` の 1 行に畳む．
+
+    条件は `config.json` の `parameters`，シードと試行番号は `run.json` の `rng`，
+    モデル名は `run.json` の `llm` ブロック，残りは月次指標から集約する．集約を子 run
+    側の指標として書かないのは，どれも月次指標から一意に決まるからである (同じ数を
+    2 箇所に置かない)．
+    """
+    params = config_parameters(child_dir) or {}
+    meta = load_run_meta(child_dir) or {}
+    scoped = run_scope_metrics(child_dir)
+    df = metrics_wide(os.path.join(child_dir, "metrics.csv"))
+    after_3y = df[df["step"] >= 36]
+    last = df.iloc[-1]
+    return {
+        "n_agents": params.get("n_agents"),
+        "tax_scale": params.get("tax_scale"),
+        "llm_model": (meta.get("llm") or {}).get("model_snapshot"),
+        "regime": params.get("regime"),
+        "run": (meta.get("rng") or {}).get("replicate_index"),
+        "seed": (meta.get("rng") or {}).get("master_seed"),
+        "final_month": scoped.get("final_month"),
+        # 3 年目以降の行が 1 つも無いときの平均は Rust 側と同じく 0.0 とする
+        # (`metrics::mean` が空スライスに 0 を返す)．
+        "mean_inflation_3y": float(after_3y["inflation_rate"].mean()) if len(after_3y) else 0.0,
+        "mean_unemployment_3y": (
+            float(after_3y["unemployment_rate"].mean()) if len(after_3y) else 0.0
+        ),
+        "final_gdp": float(last["nominal_gdp"]),
+        "final_gini": float(last["gini_savings"]),
+        "mean_work_propensity": float(df["avg_work_propensity"].mean()),
+        "mean_consume_propensity": float(df["avg_consume_propensity"].mean()),
+        "cache_hit_rate": scoped.get("llm_cache_hit_rate"),
+    }
+
+
 def load_summary(sweep_dir: str) -> pd.DataFrame:
-    """sweep_summary.csv を読み込む．"""
-    path = os.path.join(sweep_dir, "sweep_summary.csv")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"sweep_summary.csv が見つかりません: {path}")
-    return pd.read_csv(path)
+    """1 行 1 試行の表 (条件 + 最終/平均マクロ指標) を返す．"""
+    legacy = os.path.join(sweep_dir, "sweep_summary.csv")
+    if os.path.exists(legacy):
+        return pd.read_csv(legacy)
+
+    children = sweep_children(sweep_dir)
+    if not children:
+        raise FileNotFoundError(
+            f"スイープの子 run が見つかりません: {sweep_dir}\n"
+            f"  先に `cargo run --release -- sweep` を実行してください．"
+        )
+    return pd.DataFrame([_child_row(c) for c in children])
 
 
 def save_gini_by_taxscale(df: pd.DataFrame, out_path: str) -> None:
@@ -143,16 +206,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Li et al. (2024) EconAgent スイープ結果 可視化スクリプト",
     )
     p.add_argument(
-        "--sweep_dir",
         "--sweep-dir",
-        default="results/latest",
-        help="スイープ出力ディレクトリ (default: results/latest)",
+        "--sweep_dir",
+        default=None,
+        help="スイープ親 run (省略時は runvault path が返す直近の sweep)",
     )
     p.add_argument(
-        "--output_dir",
+        "--results-root",
+        "--results_root",
+        default="results",
+        help="runvault の results ルート (default: results)",
+    )
+    p.add_argument(
         "--output-dir",
+        "--output_dir",
         default=None,
-        help="図の保存先ディレクトリ (default: {sweep_dir}/figures)",
+        help="図の保存先 (既定: <results-root>/econagent/figures/<run_slug>)",
     )
     return p.parse_args(argv)
 
@@ -160,19 +229,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    out_dir = args.output_dir if args.output_dir else os.path.join(args.sweep_dir, "figures")
+    sweep_dir = args.sweep_dir or runvault_path(
+        EXPERIMENT, results_root=args.results_root, subcommand="sweep"
+    )
+    out_dir = args.output_dir if args.output_dir else figures_dir(sweep_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     print("=== Li et al. (2024) EconAgent スイープ可視化 ===")
-    print(f"スイープ: {args.sweep_dir}")
+    print(f"スイープ: {sweep_dir}")
     print(f"出力先:   {out_dir}")
     print("-------------------------------------------------")
 
-    print("[1/3] sweep_summary.csv を読み込み中 ...")
-    df = load_summary(args.sweep_dir)
+    print("[1/3] スイープの子 run から 1 行 1 試行の表を組み直し中 ...")
+    df = load_summary(sweep_dir)
     print(
         f"      tax_scale {df['tax_scale'].nunique()} 種 × N {df['n_agents'].nunique()} 種 "
-        f"× model {df['llm_model'].nunique()} 種"
+        f"× model {df['llm_model'].nunique()} 種 ({len(df)} 試行)"
     )
 
     print("[2/3] 税率スケール別の Gini/失業率 棒グラフを保存中 ...")

@@ -4,8 +4,12 @@
 //! socsim フレームワーク上に構築した LLM 駆動マクロ経済 ABM の公開 API を提供する．
 //! 設定 (`config`)・世界状態 (`world`)・LLM クライアント層 (`llm`)・プロンプト
 //! 生成と応答パース (`prompts`)・更新メカニズム (`mechanisms`)・実行ドライバ
-//! (`simulation`)・集計メトリクス (`metrics`) をモジュールとして公開し，バイナリ
-//! (`econagent`) と統合テストの双方から利用する．
+//! (`simulation`)・集計メトリクス (`metrics`)・runvault への記録 (`record`) を
+//! モジュールとして公開し，バイナリ (`econagent`) と統合テストの双方から利用する．
+//!
+//! 出力の置き場と同一性は runvault が持つ．タイムスタンプ付きディレクトリも
+//! `latest` シンボリックリンクもこちらでは作らず，`Run::start` が決めた run
+//! ディレクトリへ書く (`record` を参照)．
 //!
 //! # 二層決定論
 //!
@@ -21,5 +25,6 @@ pub mod llm;
 pub mod mechanisms;
 pub mod metrics;
 pub mod prompts;
+pub mod record;
 pub mod simulation;
 pub mod world;

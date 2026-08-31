@@ -9,10 +9,10 @@ replications/li2024/
 ├── Cargo.toml                  # Rust workspace (members = ["simulation"])
 ├── pyproject.toml              # uv workspace (members = ["tools"])
 ├── simulation/                 # Rust crate `econagent-simulation` (bin `econagent`)
-│   ├── Cargo.toml              # socsim-core + socsim-engine + socsim-llm (features=["live"])
+│   ├── Cargo.toml              # socsim-core + socsim-engine + socsim-llm (features=["live"]) + runvault
 │   ├── examples/mock_smoke.rs  # offline (no live LLM) pipeline smoke
 │   ├── src/
-│   │   ├── main.rs             # clap: run / sweep
+│   │   ├── main.rs             # clap: run / sweep / reproduce (each is one runvault run)
 │   │   ├── lib.rs
 │   │   ├── config.rs           # Config, PolicyRegime, tax schedule, LLM settings
 │   │   ├── world.rs            # EconWorld (WorldState), Household, MacroEnv
@@ -20,13 +20,15 @@ replications/li2024/
 │   │   ├── llm.rs              # socsim-llm builder (Ollama→OpenAI + cache)
 │   │   ├── prompts.rs          # perception/reflection prompts + response parsing
 │   │   ├── metrics.rs          # GDP / inflation / unemployment / Gini / propensities
-│   │   └── simulation.rs       # init_world + run drivers + output writers
+│   │   ├── record.rs           # runvault: research metadata, llm block, metrics, summaries
+│   │   └── simulation.rs       # init_world + run driver (run_with_client)
 │   └── tests/integration_test.rs   # mock-driven (ScriptedClient); no live LLM
 ├── tools/                      # Python package `econagent-tools` (module `econagent_tools`)
 │   └── src/econagent_tools/
 │       ├── cli.py
 │       ├── visualize.py        # macro time series + Phillips/Okun scatter (scipy)
-│       ├── visualize_sweep.py  # tax-scale / N / model comparison
+│       ├── visualize_sweep.py  # tax-scale / N / model comparison (rebuilt from child runs)
+│       ├── reproduce_paper.py  # paper headline report from the reproduce parent run
 │       └── show_experiment_settings.py
 └── docs/                       # bilingual (.md + .ja.md)
 ```
@@ -72,7 +74,7 @@ The LLM client, the metadata collector and the monthly-metrics buffer are shared
 
 ## Metrics
 
-`metrics.csv` is one wide row per month: `month, year, nominal_gdp, price, interest_rate, unemployment_rate, inflation_rate, gini_savings, avg_work_propensity, avg_consume_propensity, redistribution`. The Phillips curve (inflation vs unemployment) and Okun's law (GDP growth vs unemployment change) Pearson correlations are computed in Python (scipy) from this file.
+`metrics.csv` is runvault's long form (`run_uid, step, step_unit, scope, name, value`). The month is the time axis itself (`step`, with `step_unit = round` — the vocabulary has no `month`, and one tick is one full circuit of perception → decision → market clearing → fiscal → monetary → memory). The nine monthly quantities are `scope=run` step metrics under their old column names: `nominal_gdp, price, interest_rate, unemployment_rate, inflation_rate, gini_savings, avg_work_propensity, avg_consume_propensity, redistribution`. The old `year` column is gone: it was `month / 12`, a value derived from the time axis. `final_month`, `llm_calls`, `llm_cache_hits` and `llm_cache_hit_rate` are `scope=run` metrics with no step. The Phillips curve (inflation vs unemployment) and Okun's law (GDP growth vs unemployment change) Pearson correlations are computed both in Rust (for the `reproduce` anchors) and in Python (scipy, for the figures) from these metrics.
 
 ## References
 

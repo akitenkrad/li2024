@@ -1,24 +1,30 @@
 //! Li et al. (2024) "EconAgent" — 再現実験の CLI エントリポイント．
 //!
 //! `run`       : 単一設定で LLM 駆動マクロ経済 ABM を実行する．
-//! `sweep`     : エージェント数 × 税率スケール × LLM モデル (× 政策レジーム) を走査し，
-//!               最終/平均マクロ指標を `sweep_summary.csv` に集計する．
+//! `sweep`     : エージェント数 × 税率スケール × LLM モデルを走査する．
+//!               親 run 1 本 + (セル × 試行) ごとの子 run．
 //! `reproduce` : 論文の headline マクロ動態 (インフレ/失業/GDP) と Phillips 曲線
 //!               (インフレ vs 失業; 負相関)・Okun の法則 (GDP 成長 vs 失業変化;
-//!               負相関) を一括再現し，観測相関を期待符号アンカーと突合する．
+//!               負相関) を一括再現する．親 run 1 本 + 政策レジームごとの子 run で，
+//!               観測値は親の sweep スコープ指標に，論文の報告値は `reference.csv` に
+//!               入る．
+//!
+//! サブコマンド 1 回が runvault の run 1 本になる．出力の置き場と同一性 (run ディレ
+//! クトリ・`config.json`・`metrics.csv`) は runvault が持つので，ここではタイム
+//! スタンプ付きディレクトリも `latest` symlink も作らない．
 
 use std::fs;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
-use socsim_results::{refresh_latest_symlink, timestamp, write_csv, write_json};
+use runvault::{Lineage, Run, RunOptions};
 
 use econagent_simulation::config::{parse_regime, Config, LlmSettings, PolicyRegime};
-use econagent_simulation::metrics::{mean, okun_correlation, phillips_correlation};
-use econagent_simulation::simulation::{
-    ensure_output_dir, mock_decision_client, run, run_with_client, save_metrics, save_run_metadata,
-    SimulationResult,
-};
+use econagent_simulation::llm::{build_live_client, EconClient};
+use econagent_simulation::metrics::mean;
+use econagent_simulation::record::{self, RunSummary, DOMAIN, EXPERIMENT, REPO_ID, SWEEP_SCOPE};
+use econagent_simulation::simulation::{mock_decision_client, run_with_client, SimulationResult};
+use socsim_llm::LlmClient;
 
 // ---------------------------------------------------------------------------
 // CLI 定義
@@ -197,35 +203,9 @@ struct ReproduceArgs {
 // 補助
 // ---------------------------------------------------------------------------
 
-/// `sweep_summary.csv` の 1 行 (条件ごとの最終/平均マクロ指標)．
+/// スイープ親 run の実験条件 (グリッド定義そのもの)．
 #[derive(serde::Serialize)]
-struct SweepRow {
-    n_agents: usize,
-    tax_scale: f64,
-    llm_model: String,
-    regime: String,
-    run: usize,
-    seed: u64,
-    final_month: usize,
-    /// 3 年目以降 (month >= 36) の平均インフレ率．
-    mean_inflation_3y: f64,
-    /// 3 年目以降の平均失業率．
-    mean_unemployment_3y: f64,
-    /// 最終月の名目 GDP．
-    final_gdp: f64,
-    /// 最終月の貯蓄 Gini 係数．
-    final_gini: f64,
-    /// 全期間の平均労働傾向．
-    mean_work_propensity: f64,
-    /// 全期間の平均消費傾向．
-    mean_consume_propensity: f64,
-    cache_hit_rate: f64,
-}
-
-/// `sweep_config.json` の構造体．
-#[derive(serde::Serialize)]
-struct SweepConfigJson {
-    command: &'static str,
+struct SweepParameters {
     n_agents_values: Vec<usize>,
     tax_scales: Vec<f64>,
     llm_models: Vec<String>,
@@ -234,6 +214,21 @@ struct SweepConfigJson {
     memory_length: usize,
     runs: usize,
     seed: u64,
+    llm_temperature: f32,
+    llm_seed: u64,
+}
+
+/// `reproduce` 親 run の実験条件 (全シナリオ共通の設定)．
+///
+/// `mock` を持つのは，scripted mock とライブ LLM が別の世界を回すためである
+/// (子 run 側は `run.json` の `llm` ブロックが `provider = "mock"` を持つ)．
+#[derive(serde::Serialize)]
+struct ReproduceParameters {
+    n_agents: usize,
+    months: usize,
+    memory_length: usize,
+    seed: u64,
+    mock: bool,
     llm_temperature: f32,
     llm_seed: u64,
 }
@@ -270,6 +265,60 @@ fn tax_scale_range(min: f64, max: f64, step: f64) -> Vec<f64> {
     out
 }
 
+/// mock は永続キャッシュを持たないので `cache_path` を落とす．
+fn llm_settings(temperature: f32, seed: u64, cache_path: &str, mock: bool) -> LlmSettings {
+    LlmSettings {
+        temperature,
+        seed,
+        cache_path: (!mock).then(|| cache_path.to_string()),
+    }
+}
+
+/// LLM キャッシュの置き場を用意する (ライブ実行のみ; mock は in-memory)．
+fn ensure_cache_dir(cfg: &Config) {
+    if let Some(parent) = cfg
+        .llm
+        .cache_path
+        .as_deref()
+        .and_then(|path| Path::new(path).parent())
+    {
+        let _ = fs::create_dir_all(parent);
+    }
+}
+
+/// LLM クライアントを 1 本組む．
+///
+/// `run.json` の `llm` ブロックに書くモデル名と endpoint は，実際に応答する
+/// バックエンドから採らないと意味を持たないので，組み立ては `Run::start` より前に
+/// 置く．
+fn build_client(cfg: &Config, mock: bool) -> EconClient {
+    if mock {
+        mock_decision_client()
+    } else {
+        build_live_client(&cfg.llm).unwrap_or_else(|e| panic!("LLM クライアント構築に失敗: {e}"))
+    }
+}
+
+/// クライアントが名乗ったモデル/endpoint から `llm` ブロックを組む．
+fn llm_block_of(client: &EconClient, temperature: f32) -> runvault::Llm {
+    record::llm_block(
+        client.inner().model(),
+        client.inner().endpoint(),
+        temperature,
+    )
+}
+
+/// LLM 呼び出しの要約を 1 行で出す (旧 `run_metadata.json` のコンソール表示)．
+fn print_llm_summary(result: &SimulationResult) {
+    println!(
+        "LLM 呼び出し: {} 回 | cache-hit: {} ({:.1}%) | model: {}",
+        result.metadata.total(),
+        result.metadata.cache_hits(),
+        result.metadata.cache_hit_rate() * 100.0,
+        result.llm_model,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
@@ -277,28 +326,40 @@ fn tax_scale_range(min: f64, max: f64, step: f64) -> Vec<f64> {
 fn cmd_run(args: RunArgs) {
     let regime = parse_regime(&args.regime).unwrap_or_else(|e| panic!("{}", e));
 
-    let timestamp = timestamp();
-    let output_dir = format!("{}/{}", args.output_dir, timestamp);
+    // シードを実体化してから記録する．--seed 省略時にシミュレーション側で
+    // rand::random に落とすと，実際に使われたシードがどこにも残らない．
+    let seed = args.seed.unwrap_or_else(rand::random::<u64>);
 
     let cfg = Config {
         n_agents: args.n_agents,
         months: args.months,
         memory_length: args.memory_length,
         regime,
-        seed: args.seed,
-        llm: LlmSettings {
-            temperature: args.llm_temperature,
-            seed: args.llm_seed,
-            cache_path: Some(args.cache_path.clone()),
-        },
-        output_dir: output_dir.clone(),
+        tax_scale: args.tax_scale,
+        seed: Some(seed),
+        llm: llm_settings(args.llm_temperature, args.llm_seed, &args.cache_path, false),
         ..Config::default()
     };
+    ensure_cache_dir(&cfg);
 
-    if let Some(parent) = Path::new(&args.cache_path).parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    ensure_output_dir(&cfg.output_dir);
+    // クライアントは run を開始する前に組む (`llm` ブロックのため)．
+    let client = build_client(&cfg, false);
+    let llm = llm_block_of(&client, cfg.llm.temperature);
+
+    let parameters = cfg.to_run_config_json();
+    let mut rv = Run::start(
+        RunOptions::new(EXPERIMENT, "run")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&parameters)
+            .expect("runvault: parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .master_seed(seed)
+            .llm(llm)
+            .replication(record::replication()),
+    )
+    .expect("runvault: run の開始に失敗");
 
     println!("=== Li et al. (2024) EconAgent マクロ経済 再現実験 ===");
     println!(
@@ -310,25 +371,14 @@ fn cmd_run(args: RunArgs) {
         cfg.tax_scale,
     );
     println!(
-        "LLM: temp={} llm_seed={} cache={} | seed: {:?}",
-        cfg.llm.temperature, cfg.llm.seed, args.cache_path, cfg.seed
+        "LLM: temp={} llm_seed={} cache={} | seed: {}",
+        cfg.llm.temperature, cfg.llm.seed, args.cache_path, seed
     );
-    println!("出力先: {}", cfg.output_dir);
+    println!("出力先: {}", rv.dir().display());
     println!("-------------------------------------------------");
 
-    let result = run(&cfg).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
-
-    save_metrics(&result.metrics_history, &cfg.output_dir);
-    save_run_metadata(&result, &cfg, &cfg.output_dir);
-
-    // config.json (pretty-print JSON; socsim_results::write_json に委譲)．
-    {
-        let path = format!("{}/config.json", cfg.output_dir);
-        write_json(&cfg.to_run_config_json(), &path).expect("config.json の書き込みに失敗");
-    }
-
-    // latest シンボリックリンクを再作成する (best-effort; 従来同様エラーは無視)．
-    let _ = refresh_latest_symlink(&args.output_dir, &timestamp);
+    let result = run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+    record::log_simulation(&mut rv, &result);
 
     if let Some(last) = result.metrics_history.last() {
         println!(
@@ -336,16 +386,11 @@ fn cmd_run(args: RunArgs) {
             last.nominal_gdp, last.unemployment_rate, last.inflation_rate, last.gini_savings
         );
     }
-    println!(
-        "LLM 呼び出し: {} 回 | cache-hit: {} ({:.1}%) | model: {}",
-        result.metadata.total(),
-        result.metadata.cache_hits(),
-        result.metadata.cache_hit_rate() * 100.0,
-        result.llm_model,
-    );
-    println!("メトリクス → {}/metrics.csv", cfg.output_dir);
-    println!("LLM メタ   → {}/run_metadata.json", cfg.output_dir);
-    println!("設定       → {}/config.json", cfg.output_dir);
+    print_llm_summary(&result);
+
+    let dir = rv.finish().expect("runvault: run の完了に失敗");
+    println!("メトリクス → {}/metrics.csv", dir.display());
+    println!("設定       → {}/config.json", dir.display());
 }
 
 // ---------------------------------------------------------------------------
@@ -364,14 +409,43 @@ fn cmd_sweep(args: SweepArgs) {
     let tax_scales = tax_scale_range(args.tax_scale_min, args.tax_scale_max, args.tax_scale_step);
     let llm_models = split_csv(&args.llm_models);
 
-    let timestamp = timestamp();
-    let sweep_dir = format!("{}/{}_sweep", args.output_dir, timestamp);
-    fs::create_dir_all(&sweep_dir).expect("sweep ディレクトリの作成に失敗");
-    if let Some(parent) = Path::new(&args.cache_path).parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
     let n_total = n_agents_values.len() * tax_scales.len() * llm_models.len() * args.runs;
+
+    let sweep_parameters = SweepParameters {
+        n_agents_values: n_agents_values.clone(),
+        tax_scales: tax_scales.clone(),
+        llm_models: llm_models.clone(),
+        regime: regime.label().to_string(),
+        months: args.months,
+        memory_length: args.memory_length,
+        runs: args.runs,
+        seed: args.seed,
+        llm_temperature: args.llm_temperature,
+        llm_seed: args.llm_seed,
+    };
+
+    // 親 run: グリッド定義そのものを parameters に持つ．個別条件の指標は書かない
+    // (どれも子 run の月次指標から組み直せる)．親は 1 本のシミュレーションではない
+    // ので master_seed を名乗らず，base seed は /parameters.seed と seed_pointers
+    // 経由で execution_hash に残る．
+    let parent = Run::start(
+        RunOptions::new(EXPERIMENT, "sweep")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&sweep_parameters)
+            .expect("runvault: sweep の parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .sweep_parent()
+            .replication(record::replication()),
+    )
+    .expect("runvault: sweep 親 run の開始に失敗");
+
+    let sweep_id = parent
+        .sweep_id()
+        .expect("runvault: sweep 親に sweep_id がありません")
+        .to_string();
+    let parent_run_uid = parent.run_uid().to_string();
 
     println!("=== Li et al. (2024) EconAgent パラメータスイープ ===");
     println!(
@@ -383,10 +457,11 @@ fn cmd_sweep(args: SweepArgs) {
         args.runs,
         n_total,
     );
-    println!("出力先: {}", sweep_dir);
+    println!("出力先: {}", parent.dir().display());
     println!("-----------------------------------------------------------");
 
-    let mut summary_rows: Vec<SweepRow> = Vec::with_capacity(n_total);
+    // コンソールの «税率スケール別» 表のためだけに集約を持つ (ディスクには書かない)．
+    let mut cells: Vec<(f64, RunSummary)> = Vec::with_capacity(n_total);
     let mut done = 0usize;
 
     for &n_agents in &n_agents_values {
@@ -412,18 +487,50 @@ fn cmd_sweep(args: SweepArgs) {
                         regime,
                         tax_scale,
                         seed: Some(seed),
-                        llm: LlmSettings {
-                            temperature: args.llm_temperature,
-                            seed: args.llm_seed,
-                            cache_path: Some(args.cache_path.clone()),
-                        },
-                        output_dir: sweep_dir.clone(),
+                        llm: llm_settings(
+                            args.llm_temperature,
+                            args.llm_seed,
+                            &args.cache_path,
+                            false,
+                        ),
                         ..Config::default()
                     };
+                    ensure_cache_dir(&cfg);
 
-                    let result = run(&cfg).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
-                    let row = summarize(&result, n_agents, tax_scale, model, regime, run_idx, seed);
-                    summary_rows.push(row);
+                    let client = build_client(&cfg, false);
+                    let llm = llm_block_of(&client, cfg.llm.temperature);
+
+                    // 子は «セル 1 点の試行 1 本» — 手で回した `run` と同じ形の
+                    // parameters を書くので，同じ条件なら config_hash が一致する．
+                    // 名前を `run` にしないのは，`runvault path --subcommand run` が
+                    // 手で回した run と掃引の子のどちらを返すか分からなくなるため．
+                    let parameters = cfg.to_run_config_json();
+                    let mut child = Run::start(
+                        RunOptions::new(EXPERIMENT, "sweep-point")
+                            .repo_id(REPO_ID)
+                            .domain(DOMAIN)
+                            .results_root(&args.output_dir)
+                            .parameters(&parameters)
+                            .expect("runvault: 子 run の parameters の組み立てに失敗")
+                            .seed_pointers(["/seed"])
+                            .master_seed(seed)
+                            .replicate_index(run_idx as u64)
+                            .lineage(Lineage {
+                                sweep_id: Some(sweep_id.clone()),
+                                parent_run_uid: Some(parent_run_uid.clone()),
+                                ..Default::default()
+                            })
+                            .llm(llm)
+                            .replication(record::replication()),
+                    )
+                    .expect("runvault: 子 run の開始に失敗");
+
+                    let result = run_with_client(&cfg, client)
+                        .unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+                    record::log_simulation(&mut child, &result);
+                    child.finish().expect("runvault: 子 run の完了に失敗");
+
+                    cells.push((tax_scale, RunSummary::from_history(&result.metrics_history)));
                     done += 1;
                 }
                 println!(
@@ -434,41 +541,15 @@ fn cmd_sweep(args: SweepArgs) {
         }
     }
 
-    // sweep_summary.csv (各行を serialize; socsim_results::write_csv に委譲)．
-    {
-        let path = format!("{}/sweep_summary.csv", sweep_dir);
-        write_csv(&summary_rows, &path).expect("sweep_summary.csv の書き込みに失敗");
-    }
-
-    // sweep_config.json
-    {
-        let config_json = SweepConfigJson {
-            command: "sweep",
-            n_agents_values: n_agents_values.clone(),
-            tax_scales: tax_scales.clone(),
-            llm_models: llm_models.clone(),
-            regime: regime.label().to_string(),
-            months: args.months,
-            memory_length: args.memory_length,
-            runs: args.runs,
-            seed: args.seed,
-            llm_temperature: args.llm_temperature,
-            llm_seed: args.llm_seed,
-        };
-        let path = format!("{}/sweep_config.json", sweep_dir);
-        write_json(&config_json, &path).expect("sweep_config.json の書き込みに失敗");
-    }
-
-    let _ = refresh_latest_symlink(&args.output_dir, &format!("{}_sweep", timestamp));
-
     println!("===========================================================");
     println!("スイープ完了: {} 実行", n_total);
     println!("-----------------------------------------------------------");
     println!("税率スケール別の平均 Gini (再分配が不平等に与える影響):");
     for &tax_scale in &tax_scales {
-        let rows: Vec<&SweepRow> = summary_rows
+        let rows: Vec<&RunSummary> = cells
             .iter()
-            .filter(|r| (r.tax_scale - tax_scale).abs() < 1e-9)
+            .filter(|(s, _)| (s - tax_scale).abs() < 1e-9)
+            .map(|(_, r)| r)
             .collect();
         if rows.is_empty() {
             continue;
@@ -481,298 +562,248 @@ fn cmd_sweep(args: SweepArgs) {
                 .collect::<Vec<_>>(),
         );
         println!(
-            "  tax_scale={:<4} → Ginī = {:.3} | ū(3y+) = {:.3}",
+            "  tax_scale={:<4} → Ginī = {:.3} | ū(3y+) = {:.3}",
             tax_scale, avg_gini, avg_u
         );
     }
+
+    let dir = parent
+        .finish()
+        .expect("runvault: sweep 親 run の完了に失敗");
     println!("-----------------------------------------------------------");
-    println!("サマリ → {}/sweep_summary.csv", sweep_dir);
-    println!("設定   → {}/sweep_config.json", sweep_dir);
-}
-
-/// 1 実行結果を sweep の 1 行に集約する．
-fn summarize(
-    result: &econagent_simulation::simulation::SimulationResult,
-    n_agents: usize,
-    tax_scale: f64,
-    model: &str,
-    regime: PolicyRegime,
-    run_idx: usize,
-    seed: u64,
-) -> SweepRow {
-    let m = &result.metrics_history;
-    // 3 年目以降 (month >= 36) のスライス．
-    let after_3y: Vec<&econagent_simulation::metrics::MacroMetrics> =
-        m.iter().filter(|r| r.month >= 36).collect();
-    let mean_infl = mean(
-        &after_3y
-            .iter()
-            .map(|r| r.inflation_rate)
-            .collect::<Vec<_>>(),
-    );
-    let mean_unemp = mean(
-        &after_3y
-            .iter()
-            .map(|r| r.unemployment_rate)
-            .collect::<Vec<_>>(),
-    );
-    let mean_work = mean(&m.iter().map(|r| r.avg_work_propensity).collect::<Vec<_>>());
-    let mean_consume = mean(
-        &m.iter()
-            .map(|r| r.avg_consume_propensity)
-            .collect::<Vec<_>>(),
-    );
-    let (final_gdp, final_gini) = m
-        .last()
-        .map(|r| (r.nominal_gdp, r.gini_savings))
-        .unwrap_or((0.0, 0.0));
-
-    SweepRow {
-        n_agents,
-        tax_scale,
-        llm_model: model.to_string(),
-        regime: regime.label().to_string(),
-        run: run_idx,
-        seed,
-        final_month: result.final_month,
-        mean_inflation_3y: mean_infl,
-        mean_unemployment_3y: mean_unemp,
-        final_gdp,
-        final_gini,
-        mean_work_propensity: mean_work,
-        mean_consume_propensity: mean_consume,
-        cache_hit_rate: result.metadata.cache_hit_rate(),
-    }
+    println!("スイープ定義 → {}/config.json", dir.display());
+    println!("各セルの試行は子 run (subcommand=sweep-point) の metrics.csv にあります");
 }
 
 // ---------------------------------------------------------------------------
 // reproduce (論文 headline: Phillips 曲線 / Okun の法則 / マクロ動態)
 // ---------------------------------------------------------------------------
 
-/// `reproduce_summary.json` の 1 シナリオ行 (政策レジームごとのマクロ動態)．
-#[derive(serde::Serialize)]
-struct ReproduceScenario {
-    /// シナリオ名 (= 政策レジームラベル)．
-    name: String,
-    regime: String,
-    /// 3 年目以降 (month ≥ 36) の平均インフレ率．
-    mean_inflation_3y: f64,
-    /// 3 年目以降の平均失業率．
-    mean_unemployment_3y: f64,
-    /// 最終月の名目 GDP．
-    final_gdp: f64,
-    /// 最終月の貯蓄 Gini 係数．
-    final_gini: f64,
-    /// Phillips 曲線の Pearson 相関 (失業率 vs インフレ率; 負が期待)．
-    phillips_r: Option<f64>,
-    /// Okun の法則の Pearson 相関 (失業率変化 vs GDP 成長率; 負が期待)．
-    okun_r: Option<f64>,
-    /// 実行月数．
-    final_month: usize,
-    /// この結果を保存したサブディレクトリ (Python の図生成入力)．
-    results_subdir: String,
-}
-
-/// `reproduce_summary.json` のアンカー判定行．
+/// 論文の報告値 1 つ．`reference.csv` の 1 行になる．
 ///
-/// 数値帯アンカー (`target_lo..=target_hi` に `observed` が入るか) と，符号アンカー
-/// (Phillips/Okun が負か) の両方を表現する．符号アンカーは `target_hi = 0` を上限と
-/// した «負であること» の帯で表す．
-#[derive(serde::Serialize)]
-struct ReproduceAnchor {
-    name: String,
-    paper_value: String,
-    observed: f64,
-    target_lo: f64,
-    target_hi: f64,
-    pass: bool,
+/// 入るのは **論文が印字した数だけ** である．インフレ率 −5%〜5%・失業率 2%〜12% は
+/// 論文が «帯» として報告した範囲で 1 つの数ではないので (`reference.csv` は
+/// name → 1 値)，コンソールとドキュメントに残す．本実装が置いたオフライン mock の
+/// 健全域 ([`ANCHORS`] の `lo`/`hi`) は論文の主張ではないのでもちろん記録しない．
+struct PaperValue {
+    /// 観測側の指標名と揃える (差分がそのまま取れる)．
+    name: &'static str,
+    value: f64,
+    /// `research.targets[]` の target_id．
+    target_id: &'static str,
+    source: &'static str,
 }
 
-/// `reproduce_summary.json` のルート．
-#[derive(serde::Serialize)]
-struct ReproduceSummary {
-    command: &'static str,
+/// 論文 Fig. 3 が報告した Pearson 相関 (headline = 論文標準の累進課税シナリオ)．
+const PAPER_VALUES: [PaperValue; 2] = [
+    PaperValue {
+        name: "phillips_r_progressive",
+        value: -0.619,
+        target_id: "fig3",
+        source: "Li et al. (2024), Figure 3 — Phillips curve, Pearson r = -0.619 (p < 0.01)",
+    },
+    PaperValue {
+        name: "okun_r_progressive",
+        value: -0.918,
+        target_id: "fig3",
+        source: "Li et al. (2024), Figure 3 — Okun's law, Pearson r = -0.918 (p < 0.001)",
+    },
+];
+
+/// 本実装が置いたアンカー帯 (論文の主張ではないので記録せず表示だけする)．
+struct Anchor {
+    label: &'static str,
+    /// 論文が報告した内容 (表示のみ)．
     paper: &'static str,
-    mock: bool,
-    quick: bool,
-    months: usize,
-    n_agents: usize,
-    scenarios: Vec<ReproduceScenario>,
-    anchors: Vec<ReproduceAnchor>,
-    n_pass: usize,
-    n_anchors: usize,
+    /// headline シナリオの [`RunSummary`] のどの量を見るか．
+    metric: &'static str,
+    lo: f64,
+    hi: f64,
 }
 
-/// 1 設定を実行する (`mock` なら scripted mock，さもなくばライブ LLM)．
-///
-/// mock 時は cache_path を None に倒して in-memory cache を使い，ディスク保存を
-/// 抑止する (ライブ LLM 呼び出し 0)．
-fn run_one(cfg: &Config, mock: bool) -> Result<SimulationResult, String> {
-    if mock {
-        let mock_cfg = Config {
-            llm: LlmSettings {
-                cache_path: None,
-                ..cfg.llm.clone()
-            },
-            ..cfg.clone()
-        };
-        run_with_client(&mock_cfg, mock_decision_client())
-    } else {
-        run(cfg)
-    }
-}
+const ANCHORS: [Anchor; 4] = [
+    // Phillips 曲線: インフレ vs 失業の負相関 (headline)．[-1, 0) 帯．
+    Anchor {
+        label: "Phillips curve: corr(unemployment, inflation) < 0",
+        paper: "r = -0.619 (p < 0.01)",
+        metric: "phillips_r",
+        lo: -1.0,
+        hi: -1e-6,
+    },
+    // Okun の法則: GDP 成長 vs 失業変化の負相関 (headline)．[-1, 0) 帯．
+    Anchor {
+        label: "Okun's law: corr(Δunemployment, GDP growth) < 0",
+        paper: "r = -0.918 (p < 0.001)",
+        metric: "okun_r",
+        lo: -1.0,
+        hi: -1e-6,
+    },
+    // インフレ率: 有限かつ有界であること (爆発・発散の検出)．
+    // 帯は «オフライン mock の健全域» であり論文のタイトな ±5% 帯ではない:
+    // ローカル proxy 意思決定は gpt-3.5-turbo と異なり水準は一致しない (設計どおり)．
+    // headline は符号 (Phillips/Okun 負) であり，水準は定性アンカーに留める．
+    Anchor {
+        label: "mean inflation (3y+) bounded (offline-mock sanity, not paper level)",
+        paper: "-5%..5% (paper)",
+        metric: "mean_inflation_3y",
+        lo: -0.5,
+        hi: 1.0,
+    },
+    // 失業率: 有界域 (爆発検出)．論文は 2%〜12%; mock は proxy として広めに取る．
+    Anchor {
+        label: "mean unemployment (3y+) bounded in [0.0, 0.30]",
+        paper: "2%..12% (paper)",
+        metric: "mean_unemployment_3y",
+        lo: 0.0,
+        hi: 0.30,
+    },
+];
 
 fn cmd_reproduce(args: ReproduceArgs) {
     let months = if args.quick { 60 } else { args.months };
 
-    let ts = timestamp();
-    let out_dir = format!("{}/{}_reproduce", args.output_dir, ts);
-    ensure_output_dir(&out_dir);
-    if let Some(parent) = Path::new(&args.cache_path).parent() {
-        let _ = fs::create_dir_all(parent);
-    }
+    let parent_parameters = ReproduceParameters {
+        n_agents: args.n_agents,
+        months,
+        memory_length: args.memory_length,
+        seed: args.seed,
+        mock: args.mock,
+        llm_temperature: args.llm_temperature,
+        llm_seed: args.llm_seed,
+    };
+
+    // 親 run: 全シナリオ共通の設定を parameters に持ち，シナリオをまたいだ判定の
+    // 対象になる量を sweep スコープの指標として書く．論文の報告値は reference.csv に
+    // 入る．親は単一の master_seed を持たない (シナリオごとの子が派生シードを持つ)．
+    let mut parent = Run::start(
+        RunOptions::new(EXPERIMENT, "reproduce")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&parent_parameters)
+            .expect("runvault: reproduce の parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .sweep_parent()
+            .replication(record::replication()),
+    )
+    .expect("runvault: reproduce 親 run の開始に失敗");
+
+    let sweep_id = parent
+        .sweep_id()
+        .expect("runvault: reproduce 親に sweep_id がありません")
+        .to_string();
+    let parent_run_uid = parent.run_uid().to_string();
 
     println!("=== Li et al. (2024) EconAgent 論文 headline 一括再現 ===");
     println!(
         "N: {} | months: {} | memory L: {} | mock: {} | quick: {}",
         args.n_agents, months, args.memory_length, args.mock, args.quick,
     );
-    println!("出力先: {}", out_dir);
+    println!("出力先: {}", parent.dir().display());
     println!("-------------------------------------------------");
 
     // 政策レジーム 3 種を再現シナリオとする (論文標準 = progressive)．
     // proportional / none は再分配が不平等・動態に与える影響の対照群．
+    // レジームごとに世界を別々に回す (シードもシナリオ名から派生する) ので，
+    // シナリオ 1 つが子 run 1 本になる．
     let scenarios_spec: [PolicyRegime; 3] = [
         PolicyRegime::Progressive,
         PolicyRegime::Proportional,
         PolicyRegime::None,
     ];
 
-    let mut scenarios: Vec<ReproduceScenario> = Vec::new();
+    let mut summaries: Vec<(&'static str, RunSummary)> = Vec::new();
 
-    for regime in scenarios_spec {
-        let name = regime.label().to_string();
-        let subdir = format!("{}/{}", out_dir, name);
-        ensure_output_dir(&subdir);
-        let seed = socsim_core::derive_seed(args.seed, &[label_hash(&name)]);
+    for (idx, regime) in scenarios_spec.into_iter().enumerate() {
+        let name = regime.label();
+        let seed = socsim_core::derive_seed(args.seed, &[label_hash(name)]);
         let cfg = Config {
             n_agents: args.n_agents,
             months,
             memory_length: args.memory_length,
             regime,
             seed: Some(seed),
-            llm: LlmSettings {
-                temperature: args.llm_temperature,
-                seed: args.llm_seed,
-                cache_path: Some(args.cache_path.clone()),
-            },
-            output_dir: subdir.clone(),
+            llm: llm_settings(
+                args.llm_temperature,
+                args.llm_seed,
+                &args.cache_path,
+                args.mock,
+            ),
             ..Config::default()
         };
+        ensure_cache_dir(&cfg);
 
-        let result = run_one(&cfg, args.mock).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+        let client = build_client(&cfg, args.mock);
+        let llm = llm_block_of(&client, cfg.llm.temperature);
 
-        save_metrics(&result.metrics_history, &subdir);
-        save_run_metadata(&result, &cfg, &subdir);
-        let path = format!("{}/config.json", subdir);
-        write_json(&cfg.to_run_config_json(), &path).expect("config.json の書き込みに失敗");
+        let parameters = cfg.to_run_config_json();
+        let mut child = Run::start(
+            RunOptions::new(EXPERIMENT, "reproduce-scenario")
+                .repo_id(REPO_ID)
+                .domain(DOMAIN)
+                .results_root(&args.output_dir)
+                .parameters(&parameters)
+                .expect("runvault: 子 run の parameters の組み立てに失敗")
+                .seed_pointers(["/seed"])
+                .master_seed(seed)
+                .replicate_index(idx as u64)
+                .lineage(Lineage {
+                    sweep_id: Some(sweep_id.clone()),
+                    parent_run_uid: Some(parent_run_uid.clone()),
+                    ..Default::default()
+                })
+                .llm(llm)
+                .replication(record::replication()),
+        )
+        .expect("runvault: 子 run の開始に失敗");
 
-        let m = &result.metrics_history;
-        let after_3y: Vec<&econagent_simulation::metrics::MacroMetrics> =
-            m.iter().filter(|r| r.month >= 36).collect();
-        let mean_infl = mean(
-            &after_3y
-                .iter()
-                .map(|r| r.inflation_rate)
-                .collect::<Vec<_>>(),
-        );
-        let mean_unemp = mean(
-            &after_3y
-                .iter()
-                .map(|r| r.unemployment_rate)
-                .collect::<Vec<_>>(),
-        );
-        let (final_gdp, final_gini) = m
-            .last()
-            .map(|r| (r.nominal_gdp, r.gini_savings))
-            .unwrap_or((0.0, 0.0));
+        let result =
+            run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗 ({name}): {e}"));
+        record::log_simulation(&mut child, &result);
+        child.finish().expect("runvault: 子 run の完了に失敗");
 
-        scenarios.push(ReproduceScenario {
-            name: name.clone(),
-            regime: name,
-            mean_inflation_3y: mean_infl,
-            mean_unemployment_3y: mean_unemp,
-            final_gdp,
-            final_gini,
-            phillips_r: phillips_correlation(m),
-            okun_r: okun_correlation(m),
-            final_month: result.final_month,
-            results_subdir: regime.label().to_string(),
-        });
+        summaries.push((name, RunSummary::from_history(&result.metrics_history)));
     }
 
-    // headline は progressive シナリオ (論文標準)．
-    let base = scenarios
-        .iter()
-        .find(|s| s.regime == "progressive")
-        .expect("progressive シナリオが存在する");
+    // --- 親の sweep スコープ指標 (シナリオごとの判定対象) ---
+    //
+    // 条件は値ではなく «どの数か» を指す名前なので，`phillips_r_progressive` の
+    // ように名前に畳む．最終 GDP・最終 Gini・月ごとの値は子 run の metrics.csv が
+    // 正本なので親には重ねない．相関は標本不足や分散 0 のとき «定義できない» ので，
+    // `None` の行は書かない (欠測を 0 で埋めない)．
+    let mut observed: Vec<(String, f64)> = Vec::new();
+    for (name, s) in &summaries {
+        observed.push((format!("mean_inflation_3y_{name}"), s.mean_inflation_3y));
+        observed.push((
+            format!("mean_unemployment_3y_{name}"),
+            s.mean_unemployment_3y,
+        ));
+        if let Some(r) = s.phillips_r {
+            observed.push((format!("phillips_r_{name}"), r));
+        }
+        if let Some(r) = s.okun_r {
+            observed.push((format!("okun_r_{name}"), r));
+        }
+    }
+    let observed_refs: Vec<(&str, f64)> = observed.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    parent
+        .log_metrics(SWEEP_SCOPE, &observed_refs)
+        .expect("reproduce 親の集約指標の記録に失敗");
 
-    // --- アンカー判定 ---
-    let mut anchors: Vec<ReproduceAnchor> = Vec::new();
-    let mut push = |name: &str, paper: &str, obs: f64, lo: f64, hi: f64| {
-        anchors.push(ReproduceAnchor {
-            name: name.to_string(),
-            paper_value: paper.to_string(),
-            observed: obs,
-            target_lo: lo,
-            target_hi: hi,
-            pass: obs >= lo && obs <= hi,
-        });
-    };
+    // --- 論文の報告値 (reference.csv) ---
+    for pv in &PAPER_VALUES {
+        parent
+            .log_reference(pv.name, pv.value)
+            .scope(SWEEP_SCOPE)
+            .target(pv.target_id)
+            .source(pv.source)
+            .send()
+            .unwrap_or_else(|e| panic!("論文値 {} の記録に失敗: {e}", pv.name));
+    }
 
-    // Phillips 曲線: インフレ vs 失業の負相関 (headline)．[-1, 0) 帯．
-    let phillips = base.phillips_r.unwrap_or(f64::NAN);
-    push(
-        "Phillips curve: corr(unemployment, inflation) < 0",
-        "negative",
-        phillips,
-        -1.0,
-        -1e-6,
-    );
-    // Okun の法則: GDP 成長 vs 失業変化の負相関 (headline)．[-1, 0) 帯．
-    let okun = base.okun_r.unwrap_or(f64::NAN);
-    push(
-        "Okun's law: corr(Δunemployment, GDP growth) < 0",
-        "negative",
-        okun,
-        -1.0,
-        -1e-6,
-    );
-    // インフレ率: 有限かつ有界であること (爆発・発散の検出)．
-    // 帯は «オフライン mock の健全域» であり論文のタイトな ±5% 帯ではない:
-    // ローカル proxy 意思決定は gpt-3.5-turbo と異なり水準は一致しない (設計どおり)．
-    // headline は符号 (Phillips/Okun 負) であり，水準は定性アンカーに留める．
-    push(
-        "mean inflation (3y+) bounded (offline-mock sanity, not paper level)",
-        "moderate (paper ~±5%)",
-        base.mean_inflation_3y,
-        -0.5,
-        1.0,
-    );
-    // 失業率: 有界域 (爆発検出)．論文は 2%〜12%; mock は proxy として広めに取る．
-    push(
-        "mean unemployment (3y+) bounded in [0.0, 0.30]",
-        "0.02-0.12 (paper)",
-        base.mean_unemployment_3y,
-        0.0,
-        0.30,
-    );
-
-    let n_pass = anchors.iter().filter(|a| a.pass).count();
-    let n_anchors = anchors.len();
-
+    // --- コンソール出力 ---
     println!("シナリオ:");
-    for s in &scenarios {
+    for (name, s) in &summaries {
         let ph = s
             .phillips_r
             .map(|r| format!("{r:.3}"))
@@ -783,50 +814,73 @@ fn cmd_reproduce(args: ReproduceArgs) {
             .unwrap_or_else(|| "n/a".into());
         println!(
             "  [{:<12}] π̄(3y+)={:.3} ū(3y+)={:.3} GDP={:.1} Gini={:.3} | Phillips r={} Okun r={}",
-            s.name, s.mean_inflation_3y, s.mean_unemployment_3y, s.final_gdp, s.final_gini, ph, ok,
+            name, s.mean_inflation_3y, s.mean_unemployment_3y, s.final_gdp, s.final_gini, ph, ok,
         );
     }
-    println!("-------------------------------------------------");
-    for a in &anchors {
-        let hi = if a.target_hi.is_infinite() {
-            "∞".to_string()
-        } else {
-            format!("{:.3}", a.target_hi)
-        };
-        println!(
-            "[{}] {:<52} obs={:.4} target=[{:.3},{}] paper={}",
-            if a.pass { "PASS" } else { "OFF " },
-            a.name,
-            a.observed,
-            a.target_lo,
-            hi,
-            a.paper_value,
-        );
-    }
-    println!("-------------------------------------------------");
-    println!("{}/{} アンカーが in-band", n_pass, n_anchors);
 
-    let summary = ReproduceSummary {
-        command: "reproduce",
-        paper: "Li et al. (2024) EconAgent — headline macro dynamics: Phillips curve (inflation vs \
-                unemployment, negative) and Okun's law (GDP growth vs unemployment change, negative)",
-        mock: args.mock,
-        quick: args.quick,
-        months,
-        n_agents: args.n_agents,
-        scenarios,
-        anchors,
-        n_pass,
-        n_anchors,
+    // headline は progressive シナリオ (論文標準)．
+    let base = summaries
+        .iter()
+        .find(|(name, _)| *name == "progressive")
+        .map(|(_, s)| s)
+        .expect("progressive シナリオが存在する");
+
+    println!("-------------------------------------------------");
+    let by_metric = |metric: &str| -> f64 {
+        match metric {
+            "phillips_r" => base.phillips_r.unwrap_or(f64::NAN),
+            "okun_r" => base.okun_r.unwrap_or(f64::NAN),
+            "mean_inflation_3y" => base.mean_inflation_3y,
+            "mean_unemployment_3y" => base.mean_unemployment_3y,
+            other => panic!("未知のアンカー指標: {other}"),
+        }
     };
-    let path = format!("{}/reproduce_summary.json", out_dir);
-    write_json(&summary, &path).expect("reproduce_summary.json の書き込みに失敗");
+    let mut n_pass = 0usize;
+    for a in &ANCHORS {
+        let obs = by_metric(a.metric);
+        let pass = obs >= a.lo && obs <= a.hi;
+        if pass {
+            n_pass += 1;
+        }
+        println!(
+            "[{}] {:<52} obs={:.4} band=[{:.3},{:.3}] paper={}",
+            if pass { "PASS" } else { "OFF " },
+            a.label,
+            obs,
+            a.lo,
+            a.hi,
+            a.paper,
+        );
+    }
+    println!("-------------------------------------------------");
+    println!(
+        "{}/{} アンカーが in-band (帯は本実装の設定)",
+        n_pass,
+        ANCHORS.len()
+    );
+    println!("論文値との差 (Fig. 3 の Pearson 相関):");
+    for pv in &PAPER_VALUES {
+        if let Some((_, obs)) = observed.iter().find(|(n, _)| n == pv.name) {
+            println!(
+                "  {:<26} obs={:+.4} paper={:+.4} diff={:+.4}",
+                pv.name,
+                obs,
+                pv.value,
+                obs - pv.value
+            );
+        }
+    }
 
-    let _ = refresh_latest_symlink(&args.output_dir, &format!("{}_reproduce", ts));
-
-    println!("サマリ → {}/reproduce_summary.json", out_dir);
-    println!("各シナリオの metrics.csv / run_metadata.json / config.json を各サブディレクトリに保存しました．");
-    println!("図 (マクロ時系列 + Phillips/Okun 散布) は `uv run econagent-tools reproduce` で生成できます．");
+    let dir = parent
+        .finish()
+        .expect("runvault: reproduce 親 run の完了に失敗");
+    println!("-------------------------------------------------");
+    println!("集約   → {}/metrics.csv (scope=sweep)", dir.display());
+    println!("論文値 → {}/reference.csv", dir.display());
+    println!("各シナリオの月次指標は子 run (subcommand=reproduce-scenario) にあります．");
+    println!(
+        "図 (マクロ時系列 + Phillips/Okun 散布) は `uv run econagent-tools reproduce` で生成できます．"
+    );
 }
 
 // ---------------------------------------------------------------------------

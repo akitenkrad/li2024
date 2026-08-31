@@ -24,7 +24,7 @@ cargo run --release -- reproduce --mock --quick --seed 42
 uv run econagent-tools reproduce        # macro time series + Phillips/Okun scatter from the latest results
 ```
 
-`reproduce_summary.json` records the observed Phillips/Okun correlations against the expected negative-sign anchors with PASS/off. The offline mock reproduces the **signs** (the headline); its inflation level is a proxy and does not match the paper's level (a local proxy ≠ the paper's `gpt-3.5-turbo`).
+`econagent reproduce` prints the observed Phillips/Okun correlations against the expected negative-sign anchors with PASS/off, and records the observations as `scope=sweep` metrics on the parent run (the paper's Figure 3 values go to `reference.csv`). The offline mock reproduces the **signs** (the headline); its inflation level is a proxy and does not match the paper's level (a local proxy ≠ the paper's `gpt-3.5-turbo`).
 
 ## 2. Study fiscal policy and inequality
 
@@ -62,10 +62,10 @@ cargo test            # mock-driven; no live LLM
 ## 5. Inspect a run
 
 ```bash
-uv run econagent-tools show-experiment-settings --results-dir results/latest
+uv run econagent-tools show-experiment-settings   # runvault resolves the latest run
 ```
 
-Prints the configuration and the LLM metadata (model, endpoint, temperature, seed, cache-hit rate) from `run_metadata.json`.
+Prints the conditions from `config.json`'s `parameters`, the LLM block (provider, model, temperature) from `run.json`, and the LLM call/cache-hit metrics from `metrics.csv`. A pre-runvault `results/{timestamp}/config.json` or `results/{timestamp}_sweep/sweep_config.json` passed to `--results-dir` is still read.
 
 ## Further directions
 

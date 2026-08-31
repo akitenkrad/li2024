@@ -13,7 +13,7 @@ LLM output is **outside** socsim's bit-reproducibility. The design therefore spl
 - **Deterministic socsim core** — household initialisation (Pareto wages, age distribution), employment Bernoulli draws, market-adjustment uniforms (`ctx.rng`, ChaCha20), scheduling, the fiscal/monetary accounting and all metrics. Given a seed this reproduces bit-for-bit.
 - **Non-deterministic LLM layer** — the monthly work/consume decision and the quarterly reflection. Pseudo-determinised by `socsim-llm`'s `CachingClient` (a `hash(prompt+model)` → response cache), `temperature=0` and a fixed seed. The provider order is **Ollama first → OpenAI fallback** via `socsim-llm`'s `FallbackClient`.
 
-The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses, so a rerun is free and stable (the paper notes one simulation cost ~$30 and ~2 hours). Each run writes `run_metadata.json` recording the model, endpoint, temperature, seed and cache-hit rate. Because the local default model (`llama3.2`) differs from the paper's `gpt-3.5-turbo`, reproduction targets are **qualitative**: a negative Phillips correlation (`r < 0`), a negative Okun correlation (`r < 0`), and inflation/unemployment in plausible ranges — not the exact `r = −0.619` / `r = −0.918`.
+The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses, so a rerun is free and stable (the paper notes one simulation cost ~$30 and ~2 hours). Each run records the model, provider and temperature in `run.json`'s `llm` block, and the call count and cache-hit rate as run-scope metrics. Because the local default model (`llama3.2`) differs from the paper's `gpt-3.5-turbo`, reproduction targets are **qualitative**: a negative Phillips correlation (`r < 0`), a negative Okun correlation (`r < 0`), and inflation/unemployment in plausible ranges — not the exact `r = −0.619` / `r = −0.918`.
 
 > This project standardises on the `socsim-llm` crate for the LLM layer; it does **not** use `reqwest` (socsim-llm owns the HTTP transport). It needs no spatial grid or network (`socsim-grid` / `socsim-net`): the interaction is market-mediated, so it depends only on `socsim-core` + `socsim-engine` + `socsim-llm`.
 
@@ -40,7 +40,7 @@ uv sync
 uv run econagent-tools visualize
 
 # Inspect the run's settings and LLM metadata
-uv run econagent-tools show-experiment-settings --results-dir results/latest
+uv run econagent-tools show-experiment-settings   # runvault resolves the latest run
 ```
 
 ### Offline (no-LLM) smoke

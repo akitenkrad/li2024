@@ -5,8 +5,6 @@
 //! (GDP 成長 vs 失業変化) の Pearson 相関は Python (scipy) 側で `metrics.csv`
 //! から計算するため，ここでは時系列の構成要素のみを提供する．
 
-use serde::Serialize;
-
 /// 名目 GDP: 当月に生産された名目付加価値 = Σ_j (就業者の名目生産)．
 ///
 /// 就業者 1 人あたり `168 × A` 単位を物価 `P` で評価する．
@@ -135,17 +133,16 @@ pub fn okun_correlation(metrics: &[MacroMetrics]) -> Option<f64> {
     pearson(&du, &growth)
 }
 
-/// 1 月分のマクロ指標 (metrics.csv の 1 行; long-format ではなく wide 1 行)．
+/// 1 月分のマクロ指標．
 ///
-/// Python 側で long-format へ溶かす想定はせず，各列を持つ wide 形式で出力する
-/// (指標数が少なく時系列解析が素直なため)．`metrics.csv` は «month, year, ...»
-/// の月次行を縦に並べた表になる．
-#[derive(Debug, Clone, Serialize)]
+/// 記録先は runvault の `metrics.csv` で，`month` は時間軸 (`step`) に，残りの
+/// フィールドは `scope=run` のステップ指標になる (`crate::record`)．年 n は
+/// `month / 12` で一意に決まる導出値なので，フィールドとしても指標としても持たない
+/// — 同じ数を 2 箇所に置くと食い違う余地ができるだけである．
+#[derive(Debug, Clone)]
 pub struct MacroMetrics {
     /// 月 t (0 始まり)．
     pub month: usize,
-    /// 年 n (= month / 12)．
-    pub year: usize,
     /// 名目 GDP (当月)．
     pub nominal_gdp: f64,
     /// 物価 P (当月末)．
@@ -222,11 +219,10 @@ mod tests {
         assert!(pearson(&[1.0, 2.0], &[1.0]).is_none());
     }
 
-    /// month/year/unemployment/inflation/gdp だけを持つ簡易行を作る．
+    /// month/unemployment/inflation/gdp だけを持つ簡易行を作る．
     fn row(month: usize, u: f64, infl: f64, gdp: f64) -> MacroMetrics {
         MacroMetrics {
             month,
-            year: month / 12,
             nominal_gdp: gdp,
             price: 1.0,
             interest_rate: 0.0,

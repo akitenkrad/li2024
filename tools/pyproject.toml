@@ -8,6 +8,8 @@ dependencies = [
     "numpy>=1.26",
     "pandas>=2.2",
     "scipy>=1.11",
+    # run ディレクトリの読み方は runvault が持つ (read 側は pandas を使うので extra)．
+    "runvault[read]",
     "socsim-tools",
 ]
 

@@ -127,8 +127,6 @@ pub struct Config {
     pub seed: Option<u64>,
     /// LLM レイヤ設定．
     pub llm: LlmSettings,
-    /// 結果出力ディレクトリ．
-    pub output_dir: String,
 }
 
 impl Default for Config {
@@ -153,7 +151,6 @@ impl Default for Config {
             alpha_p: 0.10,
             seed: Some(42),
             llm: LlmSettings::default(),
-            output_dir: "results".to_string(),
         }
     }
 }
@@ -189,10 +186,14 @@ impl Config {
     }
 }
 
-/// `config.json` (run 用) のシリアライズ表現．
+/// runvault の `config.json` に載る «実験条件» のシリアライズ表現．
+///
+/// 出力先はもう条件ではないので持たない (run ディレクトリが出力先そのものであり，
+/// どのサブコマンドかは `run.json` が持つ)．LLM のモデル名と endpoint もここには
+/// 無い — 数でも条件でもなく «どのバックエンドが答えたか» なので `run.json` の
+/// `llm` ブロックが持つ．
 #[derive(Serialize)]
 pub struct RunConfigJson {
-    pub command: &'static str,
     pub n_agents: usize,
     pub months: usize,
     pub memory_length: usize,
@@ -213,14 +214,12 @@ pub struct RunConfigJson {
     pub seed: Option<u64>,
     pub llm_temperature: f32,
     pub llm_seed: u64,
-    pub output_dir: String,
 }
 
 impl Config {
-    /// `config.json` 用の表現を組み立てる．
+    /// `config.json` の `parameters` 用の表現を組み立てる．
     pub fn to_run_config_json(&self) -> RunConfigJson {
         RunConfigJson {
-            command: "run",
             n_agents: self.n_agents,
             months: self.months,
             memory_length: self.memory_length,
@@ -241,7 +240,6 @@ impl Config {
             seed: self.seed,
             llm_temperature: self.llm.temperature,
             llm_seed: self.llm.seed,
-            output_dir: self.output_dir.clone(),
         }
     }
 }

@@ -39,13 +39,15 @@ cargo run --release -- run \
 | `--cache-path` | `.llm_cache/cache.json` | プロンプト→応答キャッシュファイル |
 | `--output-dir` | `results` | 出力ベースディレクトリ |
 
-出力は `results/{timestamp}/` に `config.json`・`metrics.csv`・`run_metadata.json`，および `results/latest` シンボリックリンク．
+サブコマンド 1 回が runvault の run 1 本になる．run ディレクトリの作成と命名は runvault が行い，`{output-dir}/econagent/run_{timestamp}_{hash}_{suffix}/` に置かれる — 本リポジトリはタイムスタンプ付きディレクトリも `results/latest` シンボリックリンクも作らない．中身は `run.json` (`llm` ブロック: provider・モデル・温度を含む)・`config.json` (封筒．条件は `parameters` の下)・`metrics.csv` (long 形式)・`status.json`．
+
+直近の run は `runvault path --experiment econagent --latest --subcommand run --standalone` で解決する．
 
 実 LLM パスの軽量スモーク: `--n-agents 4 --months 12 --seed 42`．
 
 ## `sweep` — 感度分析
 
-エージェント数 × 税率スケール × LLM モデルを走査し，`sweep_summary.csv` へ独自集計する:
+エージェント数 × 税率スケール × LLM モデルを走査する．スイープ親 run 1 本 + (セル × 試行) ごとの子 run になる:
 
 ```bash
 cargo run --release -- sweep \
@@ -65,7 +67,7 @@ cargo run --release -- sweep \
 | `--runs` | 3 | 条件あたりの独立試行数 (派生 seed で独立化) |
 | `--seed` | 42 | 基点 seed; 各セルは独立ストリームを派生 |
 
-`sweep_summary.csv` の各行は条件ごとの集計を記録する: 3 年目以降の平均インフレ/失業・最終 GDP・最終 Gini・平均労働/消費傾向・cache-hit 率．出力は `results/{timestamp}_sweep/` に `sweep_config.json` 付き．
+親 run (`--subcommand sweep`) は格子の定義そのものを `config.json` の `parameters` に持ち，条件ごとの指標は書かない．子 run (`--subcommand sweep-point`) は 1 本のシミュレーションで，手で回した `run` と同じ形の `parameters`・自分の `master_seed` と `replicate_index`・月次の `metrics.csv` を丸ごと持つ．旧 `sweep_summary.csv` の列 (3 年目以降の平均インフレ/失業・最終 GDP・最終 Gini・平均労働/消費傾向・cache-hit 率) はすべて子から一意に決まるので，2 度書かずに `econagent-tools visualize-sweep` が必要なときに組み直す．
 
 ## `reproduce` — 論文 headline (Phillips 曲線 / Okun の法則 / マクロ動態)
 
@@ -90,7 +92,7 @@ OLLAMA_MODEL=llama3.2:latest cargo run --release -- reproduce --seed 42
 | `--cache-path` | `.llm_cache/cache.json` | プロンプト→応答キャッシュ (実 LLM パスのみ) |
 | `--output-dir` | `results` | 出力ベースディレクトリ |
 
-各シナリオの `metrics.csv` から **Phillips 曲線** の相関 (失業率 vs インフレ率; 負が期待) と **Okun の法則** の相関 (失業率変化 vs GDP 成長率; 負が期待) を算出し，観測相関と PASS/off アンカー (2 つの負符号 headline アンカー + インフレ/失業の有界域サニティ) を `reproduce_summary.json` に書き出す．各シナリオの `metrics.csv` / `run_metadata.json` / `config.json` は `results/{timestamp}_reproduce/{regime}/` に保存される．`--mock` パスは bit 決定論的でモデルを一切呼ばない．オフライン mock のインフレ水準は proxy であり論文の水準とは一致しない (ローカル proxy ≠ 論文の `gpt-3.5-turbo`) — headline 知見は 2 相関の **符号**である．
+レジームごとに別々の世界を回すので，シナリオ 1 つが子 run (`--subcommand reproduce-scenario`) になり，そのレジームの月次 `metrics.csv` を丸ごと持つ．親 (`--subcommand reproduce`) は判定の対象になる量を `scope=sweep` の指標として持ち，条件は名前に畳む: `mean_inflation_3y_{regime}`・`mean_unemployment_3y_{regime}`・`phillips_r_{regime}` (失業率 vs インフレ率; 負が期待)・`okun_r_{regime}` (失業率変化 vs GDP 成長率; 負が期待)．論文の報告値 — Fig. 3 の `r = -0.619` と `r = -0.918` — は出典付きで `reference.csv` に入る．許容帯は本実装が置いたものなので記録せずコンソールに出す．`--mock` パスは bit 決定論的でモデルを一切呼ばない．オフライン mock のインフレ水準は proxy であり論文の水準とは一致しない (ローカル proxy ≠ 論文の `gpt-3.5-turbo`) — headline 知見は 2 相関の **符号**である．
 
 図 (マクロ時系列 + Phillips/Okun 散布; scipy `r`/`p` 併記) は `uv run econagent-tools reproduce` で生成する．
 

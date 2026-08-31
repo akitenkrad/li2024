@@ -26,15 +26,15 @@ main = build_dispatcher(
     description="Li et al. (2024) EconAgent マクロ経済シミュレーション 可視化・分析ツール",
     subcommands={
         "visualize": (
-            "単一実行結果 (マクロ指標時系列 + Phillips/Okun 散布) の可視化",
+            "単一 run (マクロ指標時系列 + Phillips/Okun 散布) の可視化",
             "econagent_tools.visualize:main",
         ),
         "visualize-sweep": (
-            "スイープ結果 (税率スケール × N × モデルの指標) の可視化",
+            "スイープ (税率スケール × N × モデル) の子 run からの可視化",
             "econagent_tools.visualize_sweep:main",
         ),
         "show-experiment-settings": (
-            "実行結果ディレクトリの設定 (config / sweep_config / run_metadata) の表示",
+            "run ディレクトリの設定 (config.json の parameters / run.json の llm) の表示",
             "econagent_tools.show_experiment_settings:main",
         ),
         "reproduce": (
