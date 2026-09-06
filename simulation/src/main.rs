@@ -23,7 +23,9 @@ use econagent_simulation::config::{parse_regime, Config, LlmSettings, PolicyRegi
 use econagent_simulation::llm::{build_live_client, EconClient};
 use econagent_simulation::metrics::mean;
 use econagent_simulation::record::{self, RunSummary, DOMAIN, EXPERIMENT, REPO_ID, SWEEP_SCOPE};
-use econagent_simulation::simulation::{mock_decision_client, run_with_client, SimulationResult};
+use econagent_simulation::simulation::{
+    mock_decision_client, run_with_client_observed, SimulationResult,
+};
 use socsim_llm::LlmClient;
 
 // ---------------------------------------------------------------------------
@@ -377,7 +379,17 @@ fn cmd_run(args: RunArgs) {
     println!("出力先: {}", rv.dir().display());
     println!("-------------------------------------------------");
 
-    let result = run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+    // 進捗の 1 単位は 1 か月．費用がそこにあり，1 か月は全家計に労働と消費の
+    // 決定を尋ねる — その 1 つ 1 つがモデル呼び出しになる．run の試行は 1 本
+    // しかないので，試行を単位にすると最初の行から最後の行まで何も出ない．
+    // このモデルには早期停止 (`request_stop`) が無く必ず months か月まわるので，
+    // 分母は正確である．
+    let mut stage = rv.stage("months", cfg.months);
+    let result = run_with_client_observed(&cfg, client, |_| stage.tick())
+        .unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+    // manifest.csv は finish() で封をされる．その後に 1 行足せば，manifest が
+    // 食い違うダイジェストを持つことになる．
+    stage.close();
     record::log_simulation(&mut rv, &result);
 
     if let Some(last) = result.metrics_history.last() {
@@ -465,6 +477,28 @@ fn cmd_sweep(args: SweepArgs) {
     let mut done = 0usize;
 
     for &n_agents in &n_agents_values {
+        // stage は家計数ごとに 1 つ．その下の税率スケールとモデルは全部この 1 つに
+        // 収める — 条件ごとに開け直すと小さな 100% がグリッドの数だけ並ぶだけで，
+        // 掃引全体のどこにいるかが読めなくなる．
+        //
+        // 家計数で «だけ» 分けるのは，1 か月の費用を変える要因のうち時間的に
+        // 偏っているのがそれだけだからである．1 か月は全家計に決定を尋ねるので
+        // 費用は N に比例し，既定の `--n-agents-values 50,100,300` は 6 倍違う．
+        // しかも家計数は最も外のループなので，1 つの stage にまとめると前半
+        // (N=50) から外挿した見積もりが後半 (N=300) を数分の 1 に言う．実測でも
+        // 同じ 3 か月の区間が N=5 で 10s，N=10 で 21s だった．
+        //
+        // モデルも 1 か月の費用を変えるが，`--llm-models` は最も内側のループなので
+        // stage の中で均等に入れ替わる．混ざり方が最初から最後まで一様なら平均の
+        // 速度は代表値として正しく，見積もりは狂わない — 偏っている家計数とは
+        // 事情が違う．税率スケールは税の式を変えるだけで仕事の量を変えない．
+        //
+        // 比を重みで書くことはできない — 呼び出し 1 回の所要はプロンプト長・
+        // エンドポイント・キャッシュの当たり方で決まり，走らせる前には分からない．
+        let mut stage = parent.stage(
+            &format!("N={n_agents}"),
+            tax_scales.len() * llm_models.len() * args.runs * args.months,
+        );
         for &tax_scale in &tax_scales {
             for model in &llm_models {
                 // モデル名で OLLAMA_MODEL を上書きする (sweep の LLM モデル走査)．
@@ -525,7 +559,7 @@ fn cmd_sweep(args: SweepArgs) {
                     )
                     .expect("runvault: 子 run の開始に失敗");
 
-                    let result = run_with_client(&cfg, client)
+                    let result = run_with_client_observed(&cfg, client, |_| stage.tick())
                         .unwrap_or_else(|e| panic!("実行に失敗: {}", e));
                     record::log_simulation(&mut child, &result);
                     child.finish().expect("runvault: 子 run の完了に失敗");
@@ -539,6 +573,9 @@ fn cmd_sweep(args: SweepArgs) {
                 );
             }
         }
+        // manifest.csv は finish() で封をされる．その後に 1 行足せば，manifest が
+        // 食い違うダイジェストを持つことになる．
+        stage.close();
     }
 
     println!("===========================================================");
@@ -714,6 +751,11 @@ fn cmd_reproduce(args: ReproduceArgs) {
 
     let mut summaries: Vec<(&'static str, RunSummary)> = Vec::new();
 
+    // レジームは税の式を変えるだけで，1 か月あたりの家計数もモデル呼び出し数も
+    // 変えない．よって 3 シナリオを 1 つの stage で通して数える．早期停止が
+    // 無いので分母は正確である．
+    let mut stage = parent.stage("months", scenarios_spec.len() * months);
+
     for (idx, regime) in scenarios_spec.into_iter().enumerate() {
         let name = regime.label();
         let seed = socsim_core::derive_seed(args.seed, &[label_hash(name)]);
@@ -757,13 +799,17 @@ fn cmd_reproduce(args: ReproduceArgs) {
         )
         .expect("runvault: 子 run の開始に失敗");
 
-        let result =
-            run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗 ({name}): {e}"));
+        let result = run_with_client_observed(&cfg, client, |_| stage.tick())
+            .unwrap_or_else(|e| panic!("実行に失敗 ({name}): {e}"));
         record::log_simulation(&mut child, &result);
         child.finish().expect("runvault: 子 run の完了に失敗");
 
         summaries.push((name, RunSummary::from_history(&result.metrics_history)));
     }
+
+    // manifest.csv は finish() で封をされる．その後に 1 行足せば，manifest が
+    // 食い違うダイジェストを持つことになる．
+    stage.close();
 
     // --- 親の sweep スコープ指標 (シナリオごとの判定対象) ---
     //

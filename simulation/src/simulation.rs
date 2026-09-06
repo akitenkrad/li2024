@@ -190,6 +190,24 @@ fn parse_marker(prompt: &str, marker: &str) -> Option<f64> {
 /// ラップした `mock::ScriptedClient` を渡す．LLM クライアントはメカニズムと
 /// `Rc<RefCell<…>>` で共有し，実行後にキャッシュ保存・メタデータ集計に使う．
 pub fn run_with_client(cfg: &Config, client: EconClient) -> Result<SimulationResult, String> {
+    run_with_client_observed(cfg, client, |_| {})
+}
+
+/// The same, calling `on_month` once for every simulated month.
+///
+/// The callback is where a caller counts its progress. A month is the unit
+/// because it is the unit the cost is in: one month asks every household for
+/// its work and consumption decision, and each of those is a model call. A
+/// trial of `months` months would be a single tick, and `run` has exactly one
+/// trial — it would say nothing at all between its first line and its last.
+///
+/// It is given the month number rather than nothing so a caller can report
+/// against the clock rather than against its own tally.
+pub fn run_with_client_observed(
+    cfg: &Config,
+    client: EconClient,
+    mut on_month: impl FnMut(usize),
+) -> Result<SimulationResult, String> {
     let root = cfg.seed.unwrap_or_else(rand::random);
 
     // 初期世界 (root から派生した init RNG; 決定論的 socsim コア層)．
@@ -229,6 +247,7 @@ pub fn run_with_client(cfg: &Config, client: EconClient) -> Result<SimulationRes
     let mut final_month = 0usize;
     sim.run_observed(|report| {
         final_month = report.t as usize;
+        on_month(final_month);
     })
     .map_err(|e| format!("シミュレーションの実行に失敗: {e}"))?;
 
