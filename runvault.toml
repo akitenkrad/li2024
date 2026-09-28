@@ -1,3 +1,172 @@
-# Metric descriptions are not written yet (MYTASK-3382). Until they are,
-# runvault records undeclared metrics instead of refusing them.
-require_docs = false
+# 指標が何を測っているか (runvault の宣言．rs-runvault docs/metrics.ja.md)．
+#
+# 名前は `simulation/src/record.rs` と `simulation/src/main.rs` が記録するものと一致していなければならない．
+#
+# `direction` は «値が大きいほど良いか»．模型の状態や到達量は成績ではないので
+# `none` とし，再現精度やキャッシュ効率のように評価方向が定まる量だけ `up` /
+# `down` とする．
+# 再現条件名を末尾へ `_` で連結する 12 名は，有限な 3 条件を展開して明示する．
+
+[metrics."nominal_gdp"]
+meaning   = "その月に生産された付加価値の名目総額"
+unit      = "currency"
+direction = "none"
+scope     = ["run"]
+
+[metrics."price"]
+meaning   = "その月の財市場価格"
+unit      = "currency_per_good"
+direction = "none"
+scope     = ["run"]
+
+[metrics."interest_rate"]
+meaning   = "Taylor ルールで決まった名目金利"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."unemployment_rate"]
+meaning   = "就業していない家計の割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."inflation_rate"]
+meaning   = "前月からの物価変化率"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."gini_savings"]
+meaning   = "家計貯蓄の Gini 係数"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."avg_work_propensity"]
+meaning   = "家計の労働傾向の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."avg_consume_propensity"]
+meaning   = "家計の消費傾向の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."redistribution"]
+meaning   = "政府が家計 1 人あたりへ再分配した額"
+unit      = "currency"
+direction = "none"
+scope     = ["run"]
+
+[metrics."final_month"]
+meaning   = "シミュレーションが完了した月数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_calls"]
+meaning   = "この run が行った LLM の呼び出し回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hits"]
+meaning   = "そのうちキャッシュで済んだ回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hit_rate"]
+meaning   = "LLM 呼び出しのうちキャッシュで済んだ割合"
+unit      = "ratio"
+direction = "up"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_inflation_3y_progressive"]
+meaning   = "累進課税条件における 3 年目以降の平均インフレ率"
+unit      = "ratio"
+direction = "none"
+scope     = ["sweep"]
+
+[metrics."mean_unemployment_3y_progressive"]
+meaning   = "累進課税条件における 3 年目以降の平均失業率"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."phillips_r_progressive"]
+meaning   = "累進課税条件における失業率とインフレ率の Pearson 相関係数"
+unit      = "correlation"
+direction = "none"
+range     = [-1.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."okun_r_progressive"]
+meaning   = "累進課税条件における失業率変化と GDP 成長率の Pearson 相関係数"
+unit      = "correlation"
+direction = "none"
+range     = [-1.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."mean_inflation_3y_proportional"]
+meaning   = "比例課税条件における 3 年目以降の平均インフレ率"
+unit      = "ratio"
+direction = "none"
+scope     = ["sweep"]
+
+[metrics."mean_unemployment_3y_proportional"]
+meaning   = "比例課税条件における 3 年目以降の平均失業率"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."phillips_r_proportional"]
+meaning   = "比例課税条件における失業率とインフレ率の Pearson 相関係数"
+unit      = "correlation"
+direction = "none"
+range     = [-1.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."okun_r_proportional"]
+meaning   = "比例課税条件における失業率変化と GDP 成長率の Pearson 相関係数"
+unit      = "correlation"
+direction = "none"
+range     = [-1.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."mean_inflation_3y_none"]
+meaning   = "無課税条件における 3 年目以降の平均インフレ率"
+unit      = "ratio"
+direction = "none"
+scope     = ["sweep"]
+
+[metrics."mean_unemployment_3y_none"]
+meaning   = "無課税条件における 3 年目以降の平均失業率"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."phillips_r_none"]
+meaning   = "無課税条件における失業率とインフレ率の Pearson 相関係数"
+unit      = "correlation"
+direction = "none"
+range     = [-1.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."okun_r_none"]
+meaning   = "無課税条件における失業率変化と GDP 成長率の Pearson 相関係数"
+unit      = "correlation"
+direction = "none"
+range     = [-1.0, 1.0]
+scope     = ["sweep"]
