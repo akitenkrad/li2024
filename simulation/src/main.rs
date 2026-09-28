@@ -40,6 +40,9 @@ use socsim_llm::LlmClient;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    /// Development run: write it under results/_scratch/ so it is never synced to the vault.
+    #[arg(long, global = true)]
+    scratch: bool,
 
     /// Ollama 接続先 URL（指定時は環境変数 OLLAMA_HOST を上書きする）．
     #[arg(long, global = true)]
@@ -325,7 +328,7 @@ fn print_llm_summary(result: &SimulationResult) {
 // run
 // ---------------------------------------------------------------------------
 
-fn cmd_run(args: RunArgs) {
+fn cmd_run(args: RunArgs, scratch: bool) {
     let regime = parse_regime(&args.regime).unwrap_or_else(|e| panic!("{}", e));
 
     // シードを実体化してから記録する．--seed 省略時にシミュレーション側で
@@ -351,6 +354,7 @@ fn cmd_run(args: RunArgs) {
     let parameters = cfg.to_run_config_json();
     let mut rv = Run::start(
         RunOptions::new(EXPERIMENT, "run")
+            .scratch(scratch)
             .repo_id(REPO_ID)
             .domain(DOMAIN)
             .results_root(&args.output_dir)
@@ -409,7 +413,7 @@ fn cmd_run(args: RunArgs) {
 // sweep
 // ---------------------------------------------------------------------------
 
-fn cmd_sweep(args: SweepArgs) {
+fn cmd_sweep(args: SweepArgs, scratch: bool) {
     let regime: PolicyRegime = parse_regime(&args.regime).unwrap_or_else(|e| panic!("{}", e));
     let n_agents_values: Vec<usize> = split_csv(&args.n_agents_values)
         .iter()
@@ -442,6 +446,7 @@ fn cmd_sweep(args: SweepArgs) {
     // 経由で execution_hash に残る．
     let parent = Run::start(
         RunOptions::new(EXPERIMENT, "sweep")
+            .scratch(scratch)
             .repo_id(REPO_ID)
             .domain(DOMAIN)
             .results_root(&args.output_dir)
@@ -541,6 +546,7 @@ fn cmd_sweep(args: SweepArgs) {
                     let parameters = cfg.to_run_config_json();
                     let mut child = Run::start(
                         RunOptions::new(EXPERIMENT, "sweep-point")
+                            .scratch(scratch)
                             .repo_id(REPO_ID)
                             .domain(DOMAIN)
                             .results_root(&args.output_dir)
@@ -696,7 +702,7 @@ const ANCHORS: [Anchor; 4] = [
     },
 ];
 
-fn cmd_reproduce(args: ReproduceArgs) {
+fn cmd_reproduce(args: ReproduceArgs, scratch: bool) {
     let months = if args.quick { 60 } else { args.months };
 
     let parent_parameters = ReproduceParameters {
@@ -714,6 +720,7 @@ fn cmd_reproduce(args: ReproduceArgs) {
     // 入る．親は単一の master_seed を持たない (シナリオごとの子が派生シードを持つ)．
     let mut parent = Run::start(
         RunOptions::new(EXPERIMENT, "reproduce")
+            .scratch(scratch)
             .repo_id(REPO_ID)
             .domain(DOMAIN)
             .results_root(&args.output_dir)
@@ -781,6 +788,7 @@ fn cmd_reproduce(args: ReproduceArgs) {
         let parameters = cfg.to_run_config_json();
         let mut child = Run::start(
             RunOptions::new(EXPERIMENT, "reproduce-scenario")
+                .scratch(scratch)
                 .repo_id(REPO_ID)
                 .domain(DOMAIN)
                 .results_root(&args.output_dir)
@@ -935,12 +943,13 @@ fn cmd_reproduce(args: ReproduceArgs) {
 
 fn main() {
     let cli = Cli::parse();
+    let scratch = cli.scratch;
     if let Some(host) = cli.ollama_host.as_deref() {
         std::env::set_var("OLLAMA_HOST", host);
     }
     match cli.command {
-        Commands::Run(args) => cmd_run(args),
-        Commands::Sweep(args) => cmd_sweep(args),
-        Commands::Reproduce(args) => cmd_reproduce(args),
+        Commands::Run(args) => cmd_run(args, scratch),
+        Commands::Sweep(args) => cmd_sweep(args, scratch),
+        Commands::Reproduce(args) => cmd_reproduce(args, scratch),
     }
 }

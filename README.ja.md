@@ -52,6 +52,11 @@ cargo run --release --example mock_smoke -- results
 uv run econagent-tools visualize
 ```
 
+
+## Scratch run
+
+開発中・デバッグ中・動作確認の実行には `--scratch` を付ける．run は `results/_scratch/` に作られ，同期されない．最新の scratch run は `runvault path --scratch` で取得できる．
+
 ## スコープ
 
 本リポジトリは `EconWorld` + 6-phase ループ上の 5 メカニズム・Ollama→OpenAI フォールバック + キャッシュの LLM 意思決定層・マクロ指標を提供する．Rust の 3 サブコマンドで駆動する: `run` (単一設定)・`sweep` (エージェント数 × 税率スケール × LLM モデルの感度分析)・`reproduce` (headline シナリオを一括実行し，Phillips 曲線と Okun の法則の相関を期待符号アンカーと突合する)．Python `econagent-tools` (`visualize` / `visualize-sweep` / `show-experiment-settings` / `reproduce`) がマクロ時系列と Phillips/Okun 散布図を scipy Pearson `r`/`p` 併記で描画する．`reproduce` とオフライン mock 意思決定クライアントにより，headline 知見は実 LLM なしで検証できる．COVID-19 外的介入プロンプトと賃金十分位別の不平等 (Gini) 分解は拡張点として残している．

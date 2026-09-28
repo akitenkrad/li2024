@@ -52,6 +52,11 @@ cargo run --release --example mock_smoke -- results
 uv run econagent-tools visualize
 ```
 
+
+## Scratch runs
+
+Use `--scratch` for development, debugging, and smoke-test runs. Scratch runs are created under `results/_scratch/`, are never synced to the vault, and the latest scratch run can be located with `runvault path --scratch`.
+
 ## Scope
 
 The repository provides the `EconWorld` + five mechanisms over the six-phase loop, the LLM decision layer with Ollama→OpenAI fallback + caching, and the macro metrics. Three Rust subcommands drive it: `run` (a single configuration), `sweep` (a sensitivity analysis over agent count × tax-scale × LLM model), and `reproduce` (a one-shot batch of the headline scenarios that checks the Phillips-curve and Okun's-law correlations against the expected negative-sign anchors). The Python `econagent-tools` (`visualize` / `visualize-sweep` / `show-experiment-settings` / `reproduce`) render the macro time series and the Phillips/Okun scatter with scipy Pearson `r`/`p`. `reproduce` and the offline mock decision client make the headline result verifiable without a live LLM. A COVID-19 external-intervention prompt and a deeper inequality (Gini) decomposition are kept as clean extension points.
