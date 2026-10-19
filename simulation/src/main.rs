@@ -273,6 +273,7 @@ fn tax_scale_range(min: f64, max: f64, step: f64) -> Vec<f64> {
 /// mock は永続キャッシュを持たないので `cache_path` を落とす．
 fn llm_settings(temperature: f32, seed: u64, cache_path: &str, mock: bool) -> LlmSettings {
     LlmSettings {
+        think: None,
         temperature,
         seed,
         cache_path: (!mock).then(|| cache_path.to_string()),

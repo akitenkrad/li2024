@@ -214,7 +214,12 @@ fn reproduce_config() -> Config {
     }
 }
 
+// mock クライアントでは Phillips 相関の符号は頑健でない．40 シードで走査すると，
+// 負になったのは socsim の derive_seed が変わる前で 28/40 (平均 -0.064)，
+// 変わった後で 22/40 (平均 0.003) だった．Okun はどちらも 40/40 で負．
+// これまで通っていたのは，シード 42 がたまたま負に出ていたことによる．
 #[test]
+#[ignore = "mock では Phillips 相関の符号がシード次第で変わる (上のコメント)"]
 fn mock_reproduce_phillips_and_okun_are_negative() {
     let cfg = reproduce_config();
     let result = run_with_client(&cfg, mock_decision_client()).unwrap();
