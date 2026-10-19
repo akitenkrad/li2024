@@ -13,7 +13,7 @@ LLM 出力は socsim の bit 再現性の **外側** にある．したがって
 - **決定論的 socsim コア** — 家計初期化 (パレート賃金・年齢分布)・就業 Bernoulli ドロー・市場調整一様乱数 (`ctx.rng`, ChaCha20)・スケジューリング・財政/金融会計・全指標．seed を固定すれば bit 単位で再現する．
 - **非決定的 LLM レイヤ** — 毎月の労働/消費決定と四半期リフレクション．`socsim-llm` の `CachingClient` (`hash(prompt+model)` → 応答キャッシュ)・`temperature=0`・固定 seed で擬似決定論化する．プロバイダ順序は `socsim-llm` の `FallbackClient` による «Ollama 第一 → OpenAI フォールバック»．
 
-再現性の本体はモデルではなく **キャッシュ** である．ウォームキャッシュは同一応答を再生するため，再実行は無料かつ安定する (論文は 1 シミュレーション約 30 ドル・約 2 時間と記す)．各実行はモデル・provider・温度を `run.json` の `llm` ブロックに，呼び出し数と cache-hit 率を run スコープの指標として記録する．ローカル既定モデル (`llama3.2`) は論文の `gpt-3.5-turbo` と異なるため，再現目標は **定性的** とする: Phillips 相関が負 (`r < 0`)・Okun 相関が負 (`r < 0`)・インフレ/失業が妥当な範囲，であって厳密な `r = −0.619` / `r = −0.918` ではない．
+再現性の本体はモデルではなく **キャッシュ** である．ウォームキャッシュは同一応答を再生するため，再実行は無料かつ安定する (論文は 1 シミュレーション約 30 ドル・約 2 時間と記す)．各実行はモデル・provider・温度を `run.json` の `llm` ブロックに，呼び出し数と cache-hit 率を run スコープの指標として記録する．ローカル既定モデル (`llama3.2`) は論文の `gpt-3.5-turbo` と異なるため，再現目標は **定性的** とする: ライブ LLM では Phillips 相関が負，全実行では Okun 相関が強い負，インフレ/失業が健全域にあることを判定し，厳密な `r = −0.619` / `r = −0.918` との一致は求めない．オフライン mock の Phillips 相関は記録するが，符号は判定しない．
 
 > 本プロジェクトは LLM レイヤを `socsim-llm` クレットに標準化しており，`reqwest` は **使わない** (HTTP は socsim-llm が所有する)．相互作用は市場仲介なので空間格子・ネットワーク (`socsim-grid` / `socsim-net`) は不要であり，依存は `socsim-core` + `socsim-engine` + `socsim-llm` のみである．
 
@@ -52,6 +52,7 @@ cargo run --release --example mock_smoke -- results
 uv run econagent-tools visualize
 ```
 
+**オフライン mock で確かめられること・確かめられないこと．** scripted mock（`mock_decision_client`）は，前月の失業率と前年のインフレ率だけから計算した同じ労働・消費の値を全家計に返す．この mock の下では Okun の法則はほぼ構成上成り立つ — 名目 GDP は就業者数 × 物価なので，失業が上がった月は GDP 成長率が下がる（N = 100 で r ≈ −0.96，500 シード中 500 で負）— ので，テストで判定する．Phillips 相関は成り立たない．失業は物価と無関係な自身のドローで動き，年次インフレは対になる月より遅れて確定するため，相関は 0 の周りのノイズになる（500 シード・60 か月で平均 +0.003，負は 49%）．mock では記録するだけで判定せず，Phillips 曲線が創発するかはライブ LLM での実行で問う．また mock では税制レジームもマクロ集計値を一切変えない（変わるのは Gini だけ）．税はすべて再分配され，全家計が同じ割合を消費するためである．
 
 ## Scratch run
 
@@ -59,7 +60,7 @@ uv run econagent-tools visualize
 
 ## スコープ
 
-本リポジトリは `EconWorld` + 6-phase ループ上の 5 メカニズム・Ollama→OpenAI フォールバック + キャッシュの LLM 意思決定層・マクロ指標を提供する．Rust の 3 サブコマンドで駆動する: `run` (単一設定)・`sweep` (エージェント数 × 税率スケール × LLM モデルの感度分析)・`reproduce` (headline シナリオを一括実行し，Phillips 曲線と Okun の法則の相関を期待符号アンカーと突合する)．Python `econagent-tools` (`visualize` / `visualize-sweep` / `show-experiment-settings` / `reproduce`) がマクロ時系列と Phillips/Okun 散布図を scipy Pearson `r`/`p` 併記で描画する．`reproduce` とオフライン mock 意思決定クライアントにより，headline 知見は実 LLM なしで検証できる．COVID-19 外的介入プロンプトと賃金十分位別の不平等 (Gini) 分解は拡張点として残している．
+本リポジトリは `EconWorld` + 6-phase ループ上の 5 メカニズム・Ollama→OpenAI フォールバック + キャッシュの LLM 意思決定層・マクロ指標を提供する．Rust の 3 サブコマンドで駆動する: `run` (単一設定)・`sweep` (エージェント数 × 税率スケール × LLM モデルの感度分析)・`reproduce` (headline シナリオを一括実行し，全モードで Okun の強い負相関，ライブ LLM だけで Phillips の負相関を判定する)．Python `econagent-tools` (`visualize` / `visualize-sweep` / `show-experiment-settings` / `reproduce`) がマクロ時系列と Phillips/Okun 散布図を scipy Pearson `r`/`p` 併記で描画する．オフライン mock は，決定論的パイプラインと，その構成から検証可能な性質を確かめる．Phillips 曲線の創発はライブ LLM で問う．COVID-19 外的介入プロンプトと賃金十分位別の不平等 (Gini) 分解は拡張点として残している．
 
 ## ドキュメント
 

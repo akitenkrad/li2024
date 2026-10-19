@@ -71,7 +71,7 @@ cargo run --release -- sweep \
 
 ## `reproduce` — 論文 headline (Phillips 曲線 / Okun の法則 / マクロ動態)
 
-3 つの財政レジーム (標準の `progressive` が headline シナリオ) でマクロ動態を一括再現し，観測相関を期待符号アンカーと突合する:
+3 つの財政レジーム (標準の `progressive` が headline シナリオ) でマクロ動態を一括再現する．ライブ LLM では Phillips 相関を負符号アンカーと突合し，全実行では Okun 相関が強い負の帯 `[-1, -0.5]` にあるかを判定する．`--mock` では Phillips を `[INFO]` と表示し，PASS 数の分母から外す:
 
 ```bash
 # オフライン (実 LLM 不要) — scripted mock 意思決定クライアント
@@ -92,6 +92,6 @@ OLLAMA_MODEL=llama3.2:latest cargo run --release -- reproduce --seed 42
 | `--cache-path` | `.llm_cache/cache.json` | プロンプト→応答キャッシュ (実 LLM パスのみ) |
 | `--output-dir` | `results` | 出力ベースディレクトリ |
 
-レジームごとに別々の世界を回すので，シナリオ 1 つが子 run (`--subcommand reproduce-scenario`) になり，そのレジームの月次 `metrics.csv` を丸ごと持つ．親 (`--subcommand reproduce`) は判定の対象になる量を `scope=sweep` の指標として持ち，条件は名前に畳む: `mean_inflation_3y_{regime}`・`mean_unemployment_3y_{regime}`・`phillips_r_{regime}` (失業率 vs インフレ率; 負が期待)・`okun_r_{regime}` (失業率変化 vs GDP 成長率; 負が期待)．論文の報告値 — Fig. 3 の `r = -0.619` と `r = -0.918` — は出典付きで `reference.csv` に入る．許容帯は本実装が置いたものなので記録せずコンソールに出す．`--mock` パスは bit 決定論的でモデルを一切呼ばない．オフライン mock のインフレ水準は proxy であり論文の水準とは一致しない (ローカル proxy ≠ 論文の `gpt-3.5-turbo`) — headline 知見は 2 相関の **符号**である．
+レジームごとに別々の世界を回すので，シナリオ 1 つが子 run (`--subcommand reproduce-scenario`) になり，そのレジームの月次 `metrics.csv` を丸ごと持つ．親 (`--subcommand reproduce`) は観測量を `scope=sweep` の指標として持ち，条件は名前に畳む: `mean_inflation_3y_{regime}`・`mean_unemployment_3y_{regime}`・`phillips_r_{regime}` (失業率 vs インフレ率)・`okun_r_{regime}` (失業率変化 vs GDP 成長率)．論文の報告値 — Fig. 3 の `r = -0.619` と `r = -0.918` — は出典付きで `reference.csv` に入る．許容帯は本実装が置いたものなので記録せずコンソールに出す．`--mock` パスは bit 決定論的でモデルを一切呼ばない．Okun の強い負相関は再現するが，Phillips 相関は 0 付近のノイズなので記録するだけで符号を判定しない．インフレ水準も proxy であり，論文の水準とは一致しない (ローカル proxy ≠ 論文の `gpt-3.5-turbo`)．
 
 図 (マクロ時系列 + Phillips/Okun 散布; scipy `r`/`p` 併記) は `uv run econagent-tools reproduce` で生成する．

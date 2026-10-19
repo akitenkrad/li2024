@@ -199,7 +199,7 @@ fn different_seed_changes_employment_trajectory() {
 }
 
 // --------------------------------------------------------------------------- //
-// reproduce 用 mock クライアント: headline (Phillips/Okun の負相関) を再現する
+// reproduce 用 mock クライアントの性質
 // --------------------------------------------------------------------------- //
 
 /// reproduce シナリオ相当の設定 (mock decision client; ライブ LLM 不要)．
@@ -214,28 +214,68 @@ fn reproduce_config() -> Config {
     }
 }
 
-// mock クライアントでは Phillips 相関の符号は頑健でない．40 シードで走査すると，
-// 負になったのは socsim の derive_seed が変わる前で 28/40 (平均 -0.064)，
-// 変わった後で 22/40 (平均 0.003) だった．Okun はどちらも 40/40 で負．
-// これまで通っていたのは，シード 42 がたまたま負に出ていたことによる．
+/// mock の Okun 相関は，名目 GDP = 就業者数 × 物価という恒等式に近いため，
+/// N=100・60 か月では強い負相関になる．500 seed の実測は平均 -0.959，最大
+/// -0.915 であり，閾値 -0.8 は N=100 専用である．
 #[test]
-#[ignore = "mock では Phillips 相関の符号がシード次第で変わる (上のコメント)"]
-fn mock_reproduce_phillips_and_okun_are_negative() {
-    let cfg = reproduce_config();
-    let result = run_with_client(&cfg, mock_decision_client()).unwrap();
-    let m = &result.metrics_history;
+fn mock_okun_is_strongly_negative_across_seeds() {
+    for seed in 0..8 {
+        let mut cfg = reproduce_config();
+        cfg.seed = Some(seed);
+        let result = run_with_client(&cfg, mock_decision_client()).unwrap();
+        let okun = okun_correlation(&result.metrics_history).expect("Okun 相関が計算できる");
+        assert!(okun < -0.8, "seed {seed}: Okun r={okun} は -0.8 未満");
+    }
+}
 
-    let phillips = phillips_correlation(m).expect("Phillips 相関が計算できる");
-    let okun = okun_correlation(m).expect("Okun 相関が計算できる");
+/// mock の Phillips 相関は構造的にほぼ 0 であり，500 seed では平均 +0.003，
+/// 負は 49% だった．したがって符号は判定せず，値を計算・記録できることだけを見る．
+#[test]
+fn mock_phillips_is_computed_but_not_judged() {
+    let result = run_with_client(&reproduce_config(), mock_decision_client()).unwrap();
+    let phillips =
+        phillips_correlation(&result.metrics_history).expect("Phillips 相関が計算できる");
+    assert!(phillips.is_finite(), "Phillips 相関は有限であるべき");
+}
 
-    assert!(
-        phillips < 0.0,
-        "Phillips 曲線は負相関 (失業 ↑ で インフレ ↓) を再現すべき (got {phillips})"
-    );
-    assert!(
-        okun < 0.0,
-        "Okun の法則は負相関 (失業変化 ↑ で GDP 成長 ↓) を再現すべき (got {okun})"
-    );
+/// mock では税が全額再分配され，全家計が同じ割合を消費するため，税制レジームは
+/// 失業率・物価・名目 GDP の系列を変えない．Gini はこの不変条件の対象外である．
+#[test]
+fn mock_macro_aggregates_are_regime_invariant() {
+    let metrics = |regime| {
+        let mut cfg = reproduce_config();
+        cfg.regime = regime;
+        run_with_client(&cfg, mock_decision_client())
+            .unwrap()
+            .metrics_history
+            .into_iter()
+            .map(|m| (m.unemployment_rate, m.price, m.nominal_gdp))
+            .collect::<Vec<_>>()
+    };
+    // 失業率は完全に一致する．物価と GDP は，再分配の合計を足す順序の違いで
+    // 最下位ビットがずれうるので，相対誤差 1e-9 で比べる．
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0);
+
+    let progressive = metrics(PolicyRegime::Progressive);
+    for other in [PolicyRegime::Proportional, PolicyRegime::None] {
+        let series = metrics(other);
+        assert_eq!(progressive.len(), series.len());
+        for (month, (a, b)) in progressive.iter().zip(&series).enumerate() {
+            assert_eq!(a.0, b.0, "失業率が月 {month} で違う ({other:?})");
+            assert!(
+                close(a.1, b.1),
+                "物価が月 {month} で違う ({other:?}): {} vs {}",
+                a.1,
+                b.1
+            );
+            assert!(
+                close(a.2, b.2),
+                "GDP が月 {month} で違う ({other:?}): {} vs {}",
+                a.2,
+                b.2
+            );
+        }
+    }
 }
 
 #[test]

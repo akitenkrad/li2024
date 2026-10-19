@@ -71,7 +71,7 @@ The parent run (`--subcommand sweep`) carries the grid definition in its `config
 
 ## `reproduce` — paper headline (Phillips curve / Okun's law / macro dynamics)
 
-Runs the headline macro reproduction across the three fiscal regimes (the standard `progressive` regime is the headline scenario) and checks the observed correlations against the expected negative-sign anchors:
+Runs the headline macro reproduction across the three fiscal regimes (the standard `progressive` regime is the headline scenario). A live-LLM run checks the Phillips correlation against its negative-sign anchor; every run checks that the Okun correlation is in the strong-negative band `[-1, -0.5]`. Under `--mock`, Phillips is displayed as `[INFO]` and excluded from the PASS denominator:
 
 ```bash
 # offline (no live LLM) — scripted mock decision client
@@ -92,6 +92,6 @@ OLLAMA_MODEL=llama3.2:latest cargo run --release -- reproduce --seed 42
 | `--cache-path` | `.llm_cache/cache.json` | prompt→response cache (live path only) |
 | `--output-dir` | `results` | output base directory |
 
-Each regime runs its own world, so a scenario is a child run (`--subcommand reproduce-scenario`) holding that regime's full monthly `metrics.csv`. The parent (`--subcommand reproduce`) records the quantities the reproduction is judged on as `scope=sweep` metrics, with the condition folded into the name: `mean_inflation_3y_{regime}`, `mean_unemployment_3y_{regime}`, `phillips_r_{regime}` (unemployment vs inflation, expected negative) and `okun_r_{regime}` (Δunemployment vs GDP growth, expected negative). The paper's reported values — Figure 3's `r = -0.619` and `r = -0.918` — go to `reference.csv` with their sources; the acceptance bands are this implementation's own, so they are printed on the console and not recorded. The `--mock` path is bit-deterministic and contacts no model; the level of inflation under the offline mock is a proxy and does not match the paper's level (a local proxy ≠ the paper's `gpt-3.5-turbo`) — the headline result is the **sign** of the two correlations.
+Each regime runs its own world, so a scenario is a child run (`--subcommand reproduce-scenario`) holding that regime's full monthly `metrics.csv`. The parent (`--subcommand reproduce`) records the observed quantities as `scope=sweep` metrics, with the condition folded into the name: `mean_inflation_3y_{regime}`, `mean_unemployment_3y_{regime}`, `phillips_r_{regime}` (unemployment vs inflation) and `okun_r_{regime}` (Δunemployment vs GDP growth). The paper's reported values — Figure 3's `r = -0.619` and `r = -0.918` — go to `reference.csv` with their sources; the acceptance bands are this implementation's own, so they are printed on the console and not recorded. The `--mock` path is bit-deterministic and contacts no model. It reproduces the strong negative Okun correlation, but its Phillips correlation is noise around zero and is recorded without a sign judgment. Its inflation level is also a proxy and does not match the paper's level (a local proxy ≠ the paper's `gpt-3.5-turbo`).
 
 Generate the figures (macro time series + Phillips/Okun scatter with scipy `r`/`p`) with `uv run econagent-tools reproduce`.

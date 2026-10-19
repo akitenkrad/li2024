@@ -14,9 +14,9 @@ cargo run --release -- run --n-agents 100 --months 240 --seed 42
 uv run econagent-tools visualize
 ```
 
-`figures/phillips_okun.png` を見る．負の Phillips 相関と強い負の Okun 相関が論文の定性的知見の再現である．再現目標は [可視化](visualization.ja.md) を参照．
+ライブ LLM で実行した場合は `figures/phillips_okun.png` を見る．負の Phillips 相関と強い負の Okun 相関が論文の定性的知見の再現である．オフライン mock は Okun の強い負相関だけを判定し，Phillips は符号を判定せず記録する．再現目標は [可視化](visualization.ja.md) を参照．
 
-headline シナリオを実行し，2 つの負符号相関アンカーを照合し，図まで一括生成するには `reproduce` を使う (実 LLM 不要のオフラインパスもある):
+headline シナリオを実行し，mock またはライブ LLM で確かめられる相関を照合し，図まで一括生成するには `reproduce` を使う (実 LLM 不要のオフラインパスもある):
 
 ```bash
 # オフライン (実 LLM 不要)・短縮
@@ -24,7 +24,7 @@ cargo run --release -- reproduce --mock --quick --seed 42
 uv run econagent-tools reproduce        # 最新結果からマクロ時系列 + Phillips/Okun 散布を生成
 ```
 
-`econagent reproduce` は観測した Phillips/Okun 相関を期待符号アンカーと PASS/off で突合して表示し，観測値を親 run の `scope=sweep` 指標として記録する (論文 Fig. 3 の値は `reference.csv`)．オフライン mock は **符号** (headline) を再現する．インフレ水準は proxy であり論文の水準とは一致しない (ローカル proxy ≠ 論文の `gpt-3.5-turbo`)．
+`econagent reproduce` は観測した Phillips/Okun 相関を表示し，親 run の `scope=sweep` 指標として記録する (論文 Fig. 3 の値は `reference.csv`)．ライブ LLM では両方を判定する．オフライン mock では Phillips を `[INFO]` として PASS 数の分母から外し，Okun が `[-1, -0.5]` に入ることを判定する．mock のインフレ水準は proxy であり，論文の水準とは一致しない (ローカル proxy ≠ 論文の `gpt-3.5-turbo`)．
 
 ## 2. 財政政策と不平等の研究
 

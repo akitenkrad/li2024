@@ -14,9 +14,9 @@ cargo run --release -- run --n-agents 100 --months 240 --seed 42
 uv run econagent-tools visualize
 ```
 
-Look at `figures/phillips_okun.png`: a negative Phillips correlation and a strong negative Okun correlation reproduce the paper's qualitative findings. See [Visualization](visualization.md) for the reproduction targets.
+For a live-LLM run, look at `figures/phillips_okun.png`: a negative Phillips correlation and a strong negative Okun correlation reproduce the paper's qualitative findings. The offline mock checks only the strong negative Okun correlation; it records Phillips without judging its sign. See [Visualization](visualization.md) for the reproduction targets.
 
-For a one-shot batch that runs the headline scenarios, checks the two negative-sign correlation anchors and renders the figures in a single step — including an offline, model-free path — use `reproduce`:
+For a one-shot batch that runs the headline scenarios, applies the supported correlation checks and renders the figures in a single step — including an offline, model-free path — use `reproduce`:
 
 ```bash
 # offline (no live LLM), short run
@@ -24,7 +24,7 @@ cargo run --release -- reproduce --mock --quick --seed 42
 uv run econagent-tools reproduce        # macro time series + Phillips/Okun scatter from the latest results
 ```
 
-`econagent reproduce` prints the observed Phillips/Okun correlations against the expected negative-sign anchors with PASS/off, and records the observations as `scope=sweep` metrics on the parent run (the paper's Figure 3 values go to `reference.csv`). The offline mock reproduces the **signs** (the headline); its inflation level is a proxy and does not match the paper's level (a local proxy ≠ the paper's `gpt-3.5-turbo`).
+`econagent reproduce` prints and records the observed Phillips/Okun correlations as `scope=sweep` metrics on the parent run (the paper's Figure 3 values go to `reference.csv`). A live-LLM run judges both; the offline mock marks Phillips `[INFO]` and excludes it from the PASS denominator while requiring Okun to lie in `[-1, -0.5]`. The mock's inflation level is a proxy and does not match the paper's level (a local proxy ≠ the paper's `gpt-3.5-turbo`).
 
 ## 2. Study fiscal policy and inequality
 

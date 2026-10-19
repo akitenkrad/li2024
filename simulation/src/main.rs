@@ -663,6 +663,8 @@ struct Anchor {
     metric: &'static str,
     lo: f64,
     hi: f64,
+    /// オフライン mock でもこのアンカーを判定するか．
+    judge_mock: bool,
 }
 
 const ANCHORS: [Anchor; 4] = [
@@ -673,25 +675,28 @@ const ANCHORS: [Anchor; 4] = [
         metric: "phillips_r",
         lo: -1.0,
         hi: -1e-6,
+        judge_mock: false,
     },
-    // Okun の法則: GDP 成長 vs 失業変化の負相関 (headline)．[-1, 0) 帯．
+    // Okun の法則: GDP 成長 vs 失業変化の強い負相関 (headline)．[-1, -0.5] 帯．
     Anchor {
-        label: "Okun's law: corr(Δunemployment, GDP growth) < 0",
+        label: "Okun's law: corr(Δunemployment, GDP growth) <= -0.5",
         paper: "r = -0.918 (p < 0.001)",
         metric: "okun_r",
         lo: -1.0,
-        hi: -1e-6,
+        hi: -0.5,
+        judge_mock: true,
     },
     // インフレ率: 有限かつ有界であること (爆発・発散の検出)．
     // 帯は «オフライン mock の健全域» であり論文のタイトな ±5% 帯ではない:
     // ローカル proxy 意思決定は gpt-3.5-turbo と異なり水準は一致しない (設計どおり)．
-    // headline は符号 (Phillips/Okun 負) であり，水準は定性アンカーに留める．
+    // 相関が headline であり，mock の Phillips は表示・記録だけに留める．
     Anchor {
         label: "mean inflation (3y+) bounded (offline-mock sanity, not paper level)",
         paper: "-5%..5% (paper)",
         metric: "mean_inflation_3y",
         lo: -0.5,
         hi: 1.0,
+        judge_mock: true,
     },
     // 失業率: 有界域 (爆発検出)．論文は 2%〜12%; mock は proxy として広めに取る．
     Anchor {
@@ -700,8 +705,40 @@ const ANCHORS: [Anchor; 4] = [
         metric: "mean_unemployment_3y",
         lo: 0.0,
         hi: 0.30,
+        judge_mock: true,
     },
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnchorStatus {
+    Pass,
+    Off,
+    Info,
+}
+
+impl AnchorStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pass => "PASS",
+            Self::Off => "OFF ",
+            Self::Info => "INFO",
+        }
+    }
+
+    fn is_judged(self) -> bool {
+        self != Self::Info
+    }
+}
+
+fn assess_anchor(anchor: &Anchor, observed: f64, mock: bool) -> AnchorStatus {
+    if mock && !anchor.judge_mock {
+        AnchorStatus::Info
+    } else if observed >= anchor.lo && observed <= anchor.hi {
+        AnchorStatus::Pass
+    } else {
+        AnchorStatus::Off
+    }
+}
 
 fn cmd_reproduce(args: ReproduceArgs, scratch: bool) {
     let months = if args.quick { 60 } else { args.months };
@@ -891,28 +928,45 @@ fn cmd_reproduce(args: ReproduceArgs, scratch: bool) {
         }
     };
     let mut n_pass = 0usize;
+    let mut n_judged = 0usize;
+    let mut n_info = 0usize;
     for a in &ANCHORS {
         let obs = by_metric(a.metric);
-        let pass = obs >= a.lo && obs <= a.hi;
-        if pass {
-            n_pass += 1;
+        let status = assess_anchor(a, obs, args.mock);
+        if status.is_judged() {
+            n_judged += 1;
+            if status == AnchorStatus::Pass {
+                n_pass += 1;
+            }
+        } else {
+            n_info += 1;
         }
-        println!(
-            "[{}] {:<52} obs={:.4} band=[{:.3},{:.3}] paper={}",
-            if pass { "PASS" } else { "OFF " },
-            a.label,
-            obs,
-            a.lo,
-            a.hi,
-            a.paper,
-        );
+        if status == AnchorStatus::Info {
+            println!(
+                "[{}] {:<52} obs={:.4} not judged for --mock paper={}",
+                status.label(),
+                a.label,
+                obs,
+                a.paper,
+            );
+        } else {
+            println!(
+                "[{}] {:<52} obs={:.4} band=[{:.3},{:.3}] paper={}",
+                status.label(),
+                a.label,
+                obs,
+                a.lo,
+                a.hi,
+                a.paper,
+            );
+        }
     }
     println!("-------------------------------------------------");
-    println!(
-        "{}/{} アンカーが in-band (帯は本実装の設定)",
-        n_pass,
-        ANCHORS.len()
-    );
+    if n_info == 0 {
+        println!("{n_pass}/{n_judged} アンカーが in-band (帯は本実装の設定)");
+    } else {
+        println!("{n_pass}/{n_judged} アンカーが in-band ({n_info} INFO; 帯は本実装の設定)");
+    }
     println!("論文値との差 (Fig. 3 の Pearson 相関):");
     for pv in &PAPER_VALUES {
         if let Some((_, obs)) = observed.iter().find(|(n, _)| n == pv.name) {
@@ -952,5 +1006,40 @@ fn main() {
         Commands::Run(args) => cmd_run(args, scratch),
         Commands::Sweep(args) => cmd_sweep(args, scratch),
         Commands::Reproduce(args) => cmd_reproduce(args, scratch),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_phillips_is_info_while_live_phillips_is_judged() {
+        let phillips = &ANCHORS[0];
+        assert_eq!(assess_anchor(phillips, 0.1, true), AnchorStatus::Info);
+        assert_eq!(assess_anchor(phillips, 0.1, false), AnchorStatus::Off);
+        assert_eq!(assess_anchor(phillips, -0.1, false), AnchorStatus::Pass);
+    }
+
+    #[test]
+    fn okun_anchor_requires_a_strong_negative_correlation() {
+        let okun = &ANCHORS[1];
+        assert_eq!((okun.lo, okun.hi), (-1.0, -0.5));
+        assert_eq!(assess_anchor(okun, -0.5, true), AnchorStatus::Pass);
+        assert_eq!(assess_anchor(okun, -0.499, true), AnchorStatus::Off);
+    }
+
+    #[test]
+    fn mock_anchor_count_excludes_phillips() {
+        let observations = [0.1, -0.9, 0.5, 0.1];
+        let statuses = ANCHORS
+            .iter()
+            .zip(observations)
+            .map(|(anchor, observed)| assess_anchor(anchor, observed, true));
+        let judged = statuses.clone().filter(|status| status.is_judged()).count();
+        let passed = statuses
+            .filter(|status| *status == AnchorStatus::Pass)
+            .count();
+        assert_eq!((passed, judged), (3, 3));
     }
 }
